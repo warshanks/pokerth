@@ -5,6 +5,7 @@
 
 #include "gamehandler.h"
 #include "chatemotes.h"
+#include "llmplayer.h"
 #include <session.h>
 #include <game.h>
 #include <handinterface.h>
@@ -26,6 +27,8 @@
 #include <QRegularExpression>
 #include <QCoreApplication>
 #include <QEvent>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <algorithm>
 #include <list>
 
@@ -40,6 +43,41 @@ QString logCard(int code)
     static const char *ranks[] = {"2","3","4","5","6","7","8","9","10","J","Q","K","A"};
     static const QChar suits[] = { QChar(0x2666), QChar(0x2665), QChar(0x2660), QChar(0x2663) };
     return QString::fromLatin1(ranks[code % 13]) + QString(suits[code / 13]);
+}
+
+// Karten-Code (0-51) → ASCII-Kurzform für den LLM, z. B. "Ah", "Td", "2c".
+// Rang = code%13 (2..A, T=Zehn), Farbe = code/13 (0=d 1=h 2=s 3=c, wie logCard).
+QString cardToStr(int code)
+{
+    if (code < 0 || code > 51)
+        return QStringLiteral("??");
+    static const char *ranks[] = {"2","3","4","5","6","7","8","9","T","J","Q","K","A"};
+    static const char suits[] = {'d', 'h', 's', 'c'};
+    return QString::fromLatin1(ranks[code % 13]) + QChar(suits[code / 13]);
+}
+
+// getMyButton(): 0=keiner, 1=Dealer, 2=Small Blind, 3=Big Blind.
+QString buttonName(int button)
+{
+    switch (button) {
+    case 1: return QStringLiteral("dealer");
+    case 2: return QStringLiteral("small_blind");
+    case 3: return QStringLiteral("big_blind");
+    default: return QStringLiteral("none");
+    }
+}
+
+QString actionName(int action)
+{
+    switch (action) {
+    case PLAYER_ACTION_FOLD:  return QStringLiteral("fold");
+    case PLAYER_ACTION_CHECK: return QStringLiteral("check");
+    case PLAYER_ACTION_CALL:  return QStringLiteral("call");
+    case PLAYER_ACTION_BET:   return QStringLiteral("bet");
+    case PLAYER_ACTION_RAISE: return QStringLiteral("raise");
+    case PLAYER_ACTION_ALLIN: return QStringLiteral("allin");
+    default:                  return QStringLiteral("none");
+    }
 }
 
 // Spielverlauf-Zeile als HTML einfärben – Farben/Stil 1:1 wie der Qt-Widgets-
@@ -159,6 +197,11 @@ GameHandler::GameHandler(QObject *parent)
     m_afkResetTimer.start();
     if (qApp)
         qApp->installEventFilter(this);
+
+    // LLM eval harness: autonomous player for the hero seat (configured via env;
+    // a no-op unless POKERTH_LLM_ENABLE=1 and an endpoint are set).
+    m_llm = new LlmPlayer(this);
+    connect(m_llm, &LlmPlayer::decisionReady, this, &GameHandler::onLlmDecision);
 }
 
 bool GameHandler::eventFilter(QObject *watched, QEvent *event)
@@ -728,8 +771,10 @@ void GameHandler::doActionDone()
         m_session->sendClientPlayerAction();
     } else {
         // Local game: advance game loop (equivalent to Qt5 nextPlayerAnimation -> switchRounds)
+        // LLM eval harness: collapse the pause for fast unattended runs.
+        const int advanceDelay = (m_llm && m_llm->enabled()) ? 40 : 300;
         boost::shared_ptr<Game> game = m_game;
-        QTimer::singleShot(300, this, [game]() {
+        QTimer::singleShot(advanceDelay, this, [game]() {
             if (game && game->getCurrentHand())
                 game->getCurrentHand()->switchRounds();
         });
@@ -876,6 +921,18 @@ void GameHandler::onMeInAction()
             }
         }
     }
+    // LLM eval harness: if the autonomous player drives the hero seat, ask it for
+    // a decision instead of waiting for a human click. The engine is blocked
+    // waiting on seat 0, so the async request runs on the Qt event loop and the
+    // resulting onLlmDecision() submits the move exactly like a button press.
+    if (llmAutopilotActive() && !m_llmRequestInFlight) {
+        const QJsonObject obs = buildLlmObservation();
+        if (!obs.isEmpty()) {
+            m_llmRequestInFlight = true;
+            m_llm->requestDecision(obs);
+        }
+    }
+
     // Maßgeblicher „ich bin am Zug"-Punkt (wie meInAction im Widgets-Client):
     // hier – und nur hier – die vorgemerkte/automatische Aktion auslösen,
     // IMMER (auch wenn m_myTurn oben schon true war, z.B. via Action-Timer).
@@ -1314,6 +1371,124 @@ void GameHandler::showMyCards()
 }
 
 // ─── Local game startup ──────────────────────────────────────────────────────
+
+bool GameHandler::llmAutopilotActive() const
+{
+    // Only drive the hero seat in a running LOCAL game (the eval setup); never in
+    // network games. humanCanAct() ensures it really is our turn and we can act.
+    return m_llm && m_llm->enabled()
+           && isLocalGameRunning()
+           && humanCanAct();
+}
+
+QJsonObject GameHandler::buildLlmObservation()
+{
+    QJsonObject obs;
+    if (!m_game) return obs;
+    auto hand = m_game->getCurrentHand();
+    if (!hand) return obs;
+    auto board = hand->getBoard();
+    auto bero = hand->getCurrentBeRo();
+    auto seats = hand->getSeatsList();
+    if (!board || !bero || !seats || seats->empty()) return obs;
+    auto hero = seats->front();
+    if (!hero) return obs;
+
+    // Make sure to_call / min / max reflect the current engine state.
+    computeCallAndRaiseAmounts();
+
+    static const char *roundNames[] = {"preflop", "flop", "turn", "river", "post_river"};
+    const int round = static_cast<int>(hand->getCurrentRound());
+
+    obs["hand_id"]     = hand->getMyID();
+    obs["round"]       = (round >= 0 && round <= 4) ? QString::fromLatin1(roundNames[round]) : QStringLiteral("unknown");
+    obs["small_blind"] = hand->getSmallBlind();
+    obs["big_blind"]   = hand->getSmallBlind() * 2;
+    obs["pot"]         = board->getPot() + board->getSets();
+
+    int bc[5] = {-1, -1, -1, -1, -1};
+    board->getMyCards(bc);
+    QJsonArray boardArr;
+    for (int i = 0; i < 5; ++i)
+        if (bc[i] >= 0) boardArr.append(cardToStr(bc[i]));
+    obs["board"] = boardArr;
+
+    int hcards[2] = {-1, -1};
+    hero->getMyCards(hcards);
+    QJsonArray holeArr;
+    for (int i = 0; i < 2; ++i)
+        if (hcards[i] >= 0) holeArr.append(cardToStr(hcards[i]));
+    QJsonObject heroObj;
+    heroObj["seat"]           = hero->getMyID();
+    heroObj["name"]           = QString::fromStdString(hero->getMyName());
+    heroObj["stack"]          = hero->getMyCash();
+    heroObj["bet_this_round"] = hero->getMySet();
+    heroObj["hole_cards"]     = holeArr;
+    heroObj["position"]       = buttonName(hero->getMyButton());
+    obs["hero"] = heroObj;
+
+    // Legal action surface (mirrors what the GUI offers a human).
+    const bool canRaise = (m_minRaiseAmount > 0 && m_maxRaiseAmount >= m_minRaiseAmount);
+    obs["to_call"]   = m_callAmount;
+    obs["min_raise"] = m_minRaiseAmount;
+    obs["max_raise"] = m_maxRaiseAmount;
+    obs["can_check"] = (m_callAmount == 0);
+    obs["can_raise"] = canRaise;
+
+    QJsonArray legal;
+    legal.append(QStringLiteral("fold"));
+    legal.append(m_callAmount == 0 ? QStringLiteral("check") : QStringLiteral("call"));
+    if (canRaise) {
+        legal.append(m_callAmount == 0 ? QStringLiteral("bet") : QStringLiteral("raise"));
+        legal.append(QStringLiteral("allin"));
+    }
+    obs["legal_actions"] = legal;
+
+    QJsonArray players;
+    for (auto it = seats->begin(); it != seats->end(); ++it) {
+        if ((*it)->getMyName().empty()) continue;
+        QJsonObject po;
+        po["seat"]           = (*it)->getMyID();
+        po["name"]           = QString::fromStdString((*it)->getMyName());
+        po["stack"]          = (*it)->getMyCash();
+        po["bet_this_round"] = (*it)->getMySet();
+        po["last_action"]    = actionName((*it)->getMyAction());
+        po["position"]       = buttonName((*it)->getMyButton());
+        po["in_hand"]        = (*it)->getMyAction() != PLAYER_ACTION_FOLD && (*it)->isSessionActive();
+        po["is_hero"]        = ((*it)->getMyID() == hero->getMyID());
+        players.append(po);
+    }
+    obs["players"] = players;
+
+    return obs;
+}
+
+void GameHandler::onLlmDecision(const QString &action, int amount)
+{
+    m_llmRequestInFlight = false;
+
+    // The game may have been torn down or moved on while the request was in
+    // flight; only act if it is still genuinely the hero's turn.
+    if (!m_llm || !m_llm->enabled()) return;
+    if (!isLocalGameRunning()) return;
+    if (!isMyTurnToAct()) {
+        qDebug() << "[LLM] decision arrived but not hero's turn; dropping" << action;
+        return;
+    }
+
+    if (action == QLatin1String("fold")) {
+        fold();
+    } else if (action == QLatin1String("check") || action == QLatin1String("call")) {
+        call();
+    } else if (action == QLatin1String("bet") || action == QLatin1String("raise")) {
+        raise(amount);
+    } else if (action == QLatin1String("allin")) {
+        allIn();
+    } else {
+        qWarning() << "[LLM] unexpected action" << action << "- falling back to call/check";
+        call();
+    }
+}
 
 void GameHandler::startLocalGame()
 {

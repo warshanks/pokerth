@@ -10,6 +10,7 @@
 #include <QVariantList>
 #include <QStringList>
 #include <QElapsedTimer>
+#include <QJsonObject>
 #include <QSet>
 #include <boost/shared_ptr.hpp>
 
@@ -17,6 +18,7 @@ class ConfigFile;
 class Session;
 class Game;
 class SoundEvents;
+class LlmPlayer;
 class QTimer;
 
 class GameHandler : public QObject
@@ -145,6 +147,12 @@ public:
     Q_INVOKABLE void allIn();
     Q_INVOKABLE void showMyCards();
 
+private slots:
+    // LLM eval harness: apply a decision returned by the autonomous LlmPlayer for
+    // the hero seat (maps "fold"/"check"/"call"/"raise"/"allin" to the matching
+    // submit function above).
+    void onLlmDecision(const QString &action, int amount);
+
 signals:
     void playersChanged();
     void potChanged();
@@ -205,9 +213,19 @@ private:
     bool isMyTurnToAct() const { return m_myTurn || m_timeoutSeatId == 0; }
     void doActionDone();
 
+    // LLM eval harness: build a JSON snapshot of the table from the hero's (seat 0)
+    // perspective, including the legal action menu. Empty object if not ready.
+    QJsonObject buildLlmObservation();
+    // True when the autonomous LLM should be driving the hero seat right now.
+    bool llmAutopilotActive() const;
+
     boost::shared_ptr<Session> m_session;
     boost::shared_ptr<Game> m_game;
     ConfigFile *m_config = nullptr;
+    LlmPlayer *m_llm = nullptr;
+    // Guards against issuing a second request while one decision is in flight
+    // (onMeInAction may fire more than once per turn).
+    bool m_llmRequestInFlight = false;
     SoundEvents *m_soundEventHandler = nullptr;
     QTimer *m_timeoutBeepTimer = nullptr;
     // Ratenbegrenzung für AFK-Reset (ResetTimeoutMessage). Wie der Widgets-

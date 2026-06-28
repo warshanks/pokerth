@@ -17,6 +17,7 @@
 #include <QChar>
 #include <QMetaObject>
 #include <QTimer>
+#include <QtGlobal>
 
 namespace {
 // Karten-Code (0-51) → Kurzform mit Unicode-Farbsymbol, z. B. "K♥".
@@ -28,6 +29,15 @@ QString fmtCard(int code)
     static const char *ranks[] = {"2","3","4","5","6","7","8","9","10","J","Q","K","A"};
     static const QChar suits[] = { QChar(0x2666), QChar(0x2665), QChar(0x2660), QChar(0x2663) };
     return QString::fromLatin1(ranks[code % 13]) + QString(suits[code / 13]);
+}
+
+// LLM eval harness: with the autonomous player enabled (POKERTH_LLM_ENABLE=1) the
+// animation/think pauses between actions and hands are collapsed so that
+// unattended evaluation runs play out quickly. Normal play is unchanged.
+int evalDelayMs(int normalMs)
+{
+    static const bool fast = (qgetenv("POKERTH_LLM_ENABLE") == "1");
+    return fast ? qMax(10, normalMs / 8) : normalMs;
 }
 } // namespace
 
@@ -593,7 +603,7 @@ void QmlGuiInterface::nextPlayerAnimation()
     // After a player acts: trigger switchRounds() with a short delay
     if (!m_gameHandler) return;
     GameHandler *gh = m_gameHandler;
-    QTimer::singleShot(300, gh, [gh]() {
+    QTimer::singleShot(evalDelayMs(300), gh, [gh]() {
         QMetaObject::invokeMethod(gh, "onSwitchRounds", Qt::DirectConnection);
     });
 }
@@ -603,7 +613,7 @@ void QmlGuiInterface::beRoAnimation2(int /*myBeRoID*/)
     // CPU player's turn: advance to nextPlayer() with a short delay
     if (!m_gameHandler) return;
     GameHandler *gh = m_gameHandler;
-    QTimer::singleShot(300, gh, [gh]() {
+    QTimer::singleShot(evalDelayMs(300), gh, [gh]() {
         QMetaObject::invokeMethod(gh, "onNextPlayerBeRo", Qt::DirectConnection);
     });
 }
@@ -613,7 +623,7 @@ void QmlGuiInterface::preflopAnimation1()
     // Start of preflop betting: call BeRo::run()
     if (!m_gameHandler) return;
     GameHandler *gh = m_gameHandler;
-    QTimer::singleShot(300, gh, [gh]() {
+    QTimer::singleShot(evalDelayMs(300), gh, [gh]() {
         QMetaObject::invokeMethod(gh, "onRunBeRo", Qt::DirectConnection);
     });
 }
@@ -622,7 +632,7 @@ void QmlGuiInterface::flopAnimation1()
 {
     if (!m_gameHandler) return;
     GameHandler *gh = m_gameHandler;
-    QTimer::singleShot(300, gh, [gh]() {
+    QTimer::singleShot(evalDelayMs(300), gh, [gh]() {
         QMetaObject::invokeMethod(gh, "onRunBeRo", Qt::DirectConnection);
     });
 }
@@ -631,7 +641,7 @@ void QmlGuiInterface::turnAnimation1()
 {
     if (!m_gameHandler) return;
     GameHandler *gh = m_gameHandler;
-    QTimer::singleShot(300, gh, [gh]() {
+    QTimer::singleShot(evalDelayMs(300), gh, [gh]() {
         QMetaObject::invokeMethod(gh, "onRunBeRo", Qt::DirectConnection);
     });
 }
@@ -640,7 +650,7 @@ void QmlGuiInterface::riverAnimation1()
 {
     if (!m_gameHandler) return;
     GameHandler *gh = m_gameHandler;
-    QTimer::singleShot(300, gh, [gh]() {
+    QTimer::singleShot(evalDelayMs(300), gh, [gh]() {
         QMetaObject::invokeMethod(gh, "onRunBeRo", Qt::DirectConnection);
     });
 }
@@ -656,7 +666,7 @@ void QmlGuiInterface::postRiverAnimation1()
     // Show-down: call BeRo::postRiverRun() which distributes the pot
     if (!m_gameHandler) return;
     GameHandler *gh = m_gameHandler;
-    QTimer::singleShot(500, gh, [gh]() {
+    QTimer::singleShot(evalDelayMs(500), gh, [gh]() {
         QMetaObject::invokeMethod(gh, "onPostRiverRunBeRo", Qt::DirectConnection);
     });
 }
@@ -691,7 +701,7 @@ void QmlGuiInterface::postRiverRunAnimation1()
     if (isNetwork) {
         return;
     }
-    QTimer::singleShot(5500, gh, [gh, sessionForTimer]() {
+    QTimer::singleShot(evalDelayMs(5500), gh, [gh, sessionForTimer]() {
         QMetaObject::invokeMethod(gh, "onNextRoundCleanGui", Qt::DirectConnection);
         if (sessionForTimer) {
             auto game = sessionForTimer->getCurrentGame();
@@ -721,7 +731,7 @@ void QmlGuiInterface::dealBeRoCards(int beRoID)
 
     // After the reveal, continue the round. In an all-in condition this advances
     // to the next street/showdown (no betting); otherwise it starts the betting.
-    QTimer::singleShot(300, gh, [gh]() {
+    QTimer::singleShot(evalDelayMs(300), gh, [gh]() {
         QMetaObject::invokeMethod(gh, "onAfterDealCards", Qt::DirectConnection);
     });
 }

@@ -1,0 +1,314 @@
+/*****************************************************************************
+ * PokerTH - The open source texas holdem engine                             *
+ * Copyright (C) 2006-2025 Felix Hammer, Florian Thauer, Lothar May          *
+ *****************************************************************************/
+
+#include "llmplayer.h"
+
+#include <QNetworkAccessManager>
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QJsonDocument>
+#include <QJsonArray>
+#include <QStringList>
+#include <QProcessEnvironment>
+#include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QUrl>
+#include <QDebug>
+
+LlmPlayer::LlmPlayer(QObject *parent)
+	: QObject(parent)
+{
+	const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+
+	m_endpoint = env.value("POKERTH_LLM_ENDPOINT").trimmed();
+	m_model    = env.value("POKERTH_LLM_MODEL", "gpt-3.5-turbo").trimmed();
+	m_apiKey   = env.value("POKERTH_LLM_API_KEY").trimmed();
+
+	const QString enableFlag = env.value("POKERTH_LLM_ENABLE", "0").trimmed();
+	const bool wantEnabled = (enableFlag == "1" || enableFlag.compare("true", Qt::CaseInsensitive) == 0);
+	m_enabled = wantEnabled && !m_endpoint.isEmpty();
+
+	bool ok = false;
+	const double temp = env.value("POKERTH_LLM_TEMPERATURE").toDouble(&ok);
+	if (ok) m_temperature = temp;
+	const int tmo = env.value("POKERTH_LLM_TIMEOUT_MS").toInt(&ok);
+	if (ok && tmo > 0) m_timeoutMs = tmo;
+
+	m_jsonMode = (env.value("POKERTH_LLM_JSON_MODE", "1").trimmed() != "0");
+
+	m_logPath = env.value("POKERTH_LLM_LOG").trimmed();
+	if (m_logPath.isEmpty())
+		m_logPath = QDir::home().filePath("pokerth_llm_eval.jsonl");
+
+	m_nam = new QNetworkAccessManager(this);
+
+	if (wantEnabled && m_endpoint.isEmpty())
+		qWarning() << "[LLM] POKERTH_LLM_ENABLE set but POKERTH_LLM_ENDPOINT is empty - autopilot disabled";
+	if (m_enabled)
+		qInfo() << "[LLM] autopilot ENABLED endpoint=" << m_endpoint
+		        << "model=" << m_model << "log=" << m_logPath;
+}
+
+LlmPlayer::~LlmPlayer() = default;
+
+void LlmPlayer::requestDecision(const QJsonObject &observation)
+{
+	m_pendingObs = observation;
+	m_requestStartMs = QDateTime::currentMSecsSinceEpoch();
+
+	QJsonArray messages;
+	messages.append(QJsonObject{{"role", "system"}, {"content", buildSystemPrompt()}});
+	messages.append(QJsonObject{{"role", "user"},   {"content", buildUserPrompt(observation)}});
+
+	QJsonObject body;
+	body["model"]       = m_model;
+	body["messages"]    = messages;
+	body["temperature"] = m_temperature;
+	body["max_tokens"]  = 512;
+	// Ask OpenAI-compatible servers for strict JSON. Can be disabled for servers
+	// that reject the field; we also defensively extract JSON from prose.
+	if (m_jsonMode)
+		body["response_format"] = QJsonObject{{"type", "json_object"}};
+
+	QNetworkRequest req{QUrl(m_endpoint)};
+	req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+	if (!m_apiKey.isEmpty())
+		req.setRawHeader("Authorization", QByteArray("Bearer ") + m_apiKey.toUtf8());
+	req.setTransferTimeout(m_timeoutMs);
+
+	QNetworkReply *reply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+	connect(reply, &QNetworkReply::finished, this, &LlmPlayer::onReplyFinished);
+}
+
+void LlmPlayer::onReplyFinished()
+{
+	QNetworkReply *reply = qobject_cast<QNetworkReply *>(sender());
+	if (!reply) return;
+	reply->deleteLater();
+
+	const qint64 latency = QDateTime::currentMSecsSinceEpoch() - m_requestStartMs;
+	const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+
+	QString action;
+	int amount = 0;
+	QString status;
+	QString content;
+
+	if (reply->error() != QNetworkReply::NoError) {
+		status = QStringLiteral("http_error: ") + reply->errorString();
+		fallback(m_pendingObs, action, amount);
+	} else {
+		const QByteArray data = reply->readAll();
+		QJsonParseError pe;
+		const QJsonDocument doc = QJsonDocument::fromJson(data, &pe);
+		if (pe.error != QJsonParseError::NoError || !doc.isObject()) {
+			status = QStringLiteral("bad_response_json");
+			fallback(m_pendingObs, action, amount);
+		} else {
+			content = doc.object()
+			          .value("choices").toArray().at(0).toObject()
+			          .value("message").toObject()
+			          .value("content").toString();
+			if (content.trimmed().isEmpty()) {
+				status = QStringLiteral("empty_content");
+				fallback(m_pendingObs, action, amount);
+			} else {
+				decideFromText(m_pendingObs, content, action, amount, status);
+			}
+		}
+	}
+
+	logDecision(m_pendingObs, content, action, amount, status, latency, httpStatus);
+	qInfo() << "[LLM] decision=" << action << "amount=" << amount
+	        << "status=" << status << "latency_ms=" << latency;
+	emit decisionReady(action, amount);
+}
+
+void LlmPlayer::decideFromText(const QJsonObject &obs, const QString &content,
+                               QString &outAction, int &outAmount, QString &status) const
+{
+	// Models occasionally wrap the JSON in markdown fences or prose; grab the
+	// outermost {...} block.
+	const int b = content.indexOf('{');
+	const int e = content.lastIndexOf('}');
+	QJsonObject d;
+	if (b >= 0 && e > b) {
+		QJsonParseError pe;
+		const QJsonDocument doc = QJsonDocument::fromJson(content.mid(b, e - b + 1).toUtf8(), &pe);
+		if (pe.error == QJsonParseError::NoError && doc.isObject())
+			d = doc.object();
+	}
+	if (d.isEmpty()) {
+		status = QStringLiteral("unparseable_decision");
+		fallback(obs, outAction, outAmount);
+		return;
+	}
+
+	const QString a = d.value("action").toString().trimmed().toLower();
+	int amt = 0;
+	if (d.value("amount").isDouble())
+		amt = static_cast<int>(d.value("amount").toDouble());
+	else
+		amt = d.value("amount").toString().toInt();
+
+	const int toCall    = obs.value("to_call").toInt();
+	const int minRaise  = obs.value("min_raise").toInt();
+	const int maxRaise  = obs.value("max_raise").toInt();
+	const bool canCheck = obs.value("can_check").toBool();
+	const bool canRaise = obs.value("can_raise").toBool();
+
+	status = QStringLiteral("ok");
+
+	if (a == "fold") {
+		outAction = QStringLiteral("fold");
+		outAmount = 0;
+	} else if (a == "check") {
+		if (canCheck) {
+			outAction = QStringLiteral("check");
+		} else {
+			outAction = QStringLiteral("call");
+			status = QStringLiteral("coerced_check_to_call");
+		}
+		outAmount = 0;
+	} else if (a == "call") {
+		outAction = (toCall == 0) ? QStringLiteral("check") : QStringLiteral("call");
+		outAmount = 0;
+	} else if (a == "bet" || a == "raise") {
+		if (!canRaise) {
+			outAction = (toCall == 0) ? QStringLiteral("check") : QStringLiteral("call");
+			outAmount = 0;
+			status = QStringLiteral("raise_not_allowed_degraded");
+		} else {
+			int clamped = amt;
+			if (clamped < minRaise) { clamped = minRaise; status = QStringLiteral("raise_clamped_min"); }
+			if (clamped > maxRaise) { clamped = maxRaise; status = QStringLiteral("raise_clamped_max"); }
+			outAction = (clamped >= maxRaise) ? QStringLiteral("allin") : QStringLiteral("raise");
+			outAmount = clamped;
+		}
+	} else if (a == "allin" || a == "all-in" || a == "all_in") {
+		if (canRaise) {
+			outAction = QStringLiteral("allin");
+			outAmount = maxRaise;
+		} else {
+			outAction = (toCall == 0) ? QStringLiteral("check") : QStringLiteral("call");
+			outAmount = 0;
+			status = QStringLiteral("allin_degraded");
+		}
+	} else {
+		status = QStringLiteral("unknown_action:") + a;
+		fallback(obs, outAction, outAmount);
+	}
+}
+
+void LlmPlayer::fallback(const QJsonObject &obs, QString &outAction, int &outAmount) const
+{
+	const bool canCheck = obs.value("can_check").toBool() || obs.value("to_call").toInt() == 0;
+	outAction = canCheck ? QStringLiteral("check") : QStringLiteral("fold");
+	outAmount = 0;
+}
+
+QString LlmPlayer::buildSystemPrompt() const
+{
+	return QStringLiteral(
+		"You are an expert No-Limit Texas Hold'em poker player. You are playing a "
+		"tournament autonomously. On each turn you are given the full table state "
+		"and the exact list of legal actions, and you must choose one.\n\n"
+		"All chip amounts are integers. \"to_call\" is how many chips you must add "
+		"to call. For a bet or raise, \"amount\" is the TOTAL additional chips you "
+		"put in this turn (it must be between \"min_raise\" and \"max_raise\", where "
+		"\"max_raise\" means all-in).\n\n"
+		"Respond with ONLY a single JSON object, no prose, no markdown, in exactly "
+		"this form:\n"
+		"{\"action\": \"<fold|check|call|bet|raise|allin>\", \"amount\": <int>, "
+		"\"reasoning\": \"<short>\"}\n"
+		"Use \"amount\": 0 for fold/check/call/allin. Only choose an action that is "
+		"present in \"legal_actions\".");
+}
+
+QString LlmPlayer::buildUserPrompt(const QJsonObject &obs) const
+{
+	// A readable summary followed by the raw JSON. The summary helps weaker models;
+	// the JSON guarantees nothing is lost.
+	const auto joinCards = [](const QJsonArray &arr) {
+		QStringList s;
+		for (const auto &c : arr) s << c.toString();
+		return s.join(' ');
+	};
+
+	const QJsonObject hero = obs.value("hero").toObject();
+	const QString holeStr = joinCards(hero.value("hole_cards").toArray());
+	const QString boardStr = joinCards(obs.value("board").toArray());
+
+	QStringList lines;
+	lines << QStringLiteral("Betting round: %1").arg(obs.value("round").toString());
+	lines << QStringLiteral("Your hole cards: %1").arg(holeStr.isEmpty() ? QStringLiteral("(hidden)") : holeStr);
+	lines << QStringLiteral("Board: %1").arg(boardStr.isEmpty() ? QStringLiteral("(none yet)") : boardStr);
+	lines << QStringLiteral("Pot: %1").arg(obs.value("pot").toInt());
+	lines << QStringLiteral("Your stack: %1   Your position: %2")
+	         .arg(hero.value("stack").toInt()).arg(hero.value("position").toString());
+	lines << QStringLiteral("To call: %1   Min raise: %2   Max raise (all-in): %3")
+	         .arg(obs.value("to_call").toInt())
+	         .arg(obs.value("min_raise").toInt())
+	         .arg(obs.value("max_raise").toInt());
+	{
+		QStringList opp;
+		for (const auto &pv : obs.value("players").toArray()) {
+			const QJsonObject p = pv.toObject();
+			if (p.value("is_hero").toBool()) continue;
+			if (p.value("name").toString().isEmpty()) continue;
+			opp << QStringLiteral("  seat %1 %2 [%3]: stack %4, bet %5, last %6%7")
+			       .arg(p.value("seat").toInt())
+			       .arg(p.value("name").toString())
+			       .arg(p.value("position").toString())
+			       .arg(p.value("stack").toInt())
+			       .arg(p.value("bet_this_round").toInt())
+			       .arg(p.value("last_action").toString())
+			       .arg(p.value("in_hand").toBool() ? QString() : QStringLiteral(" (folded/out)"));
+		}
+		if (!opp.isEmpty()) {
+			lines << QStringLiteral("Opponents:");
+			lines << opp.join('\n');
+		}
+	}
+	{
+		QStringList legal;
+		for (const auto &c : obs.value("legal_actions").toArray()) legal << c.toString();
+		lines << QStringLiteral("Legal actions: %1").arg(legal.join(", "));
+	}
+	lines << QString();
+	lines << QStringLiteral("Full state JSON:");
+	lines << QString::fromUtf8(QJsonDocument(obs).toJson(QJsonDocument::Compact));
+	lines << QString();
+	lines << QStringLiteral("Respond with only the JSON decision object.");
+	return lines.join('\n');
+}
+
+void LlmPlayer::logDecision(const QJsonObject &obs, const QString &rawContent,
+                            const QString &action, int amount, const QString &status,
+                            qint64 latencyMs, int httpStatus) const
+{
+	if (m_logPath.isEmpty()) return;
+
+	QJsonObject rec;
+	rec["ts"]          = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
+	rec["model"]       = m_model;
+	rec["observation"] = obs;
+	rec["raw"]         = rawContent;
+	rec["action"]      = action;
+	rec["amount"]      = amount;
+	rec["status"]      = status;
+	rec["latency_ms"]  = static_cast<double>(latencyMs);
+	rec["http_status"] = httpStatus;
+
+	QFile f(m_logPath);
+	if (f.open(QIODevice::Append | QIODevice::Text)) {
+		f.write(QJsonDocument(rec).toJson(QJsonDocument::Compact));
+		f.write("\n");
+		f.close();
+	} else {
+		qWarning() << "[LLM] could not append to log" << m_logPath;
+	}
+}
