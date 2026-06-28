@@ -163,6 +163,7 @@ void LlmPlayer::onReplyFinished()
 	int amount = 0;
 	QString status;
 	QString content;
+	QString reasoning;
 
 	if (reply->error() != QNetworkReply::NoError) {
 		status = QStringLiteral("http_error: ") + reply->errorString();
@@ -183,19 +184,21 @@ void LlmPlayer::onReplyFinished()
 				status = QStringLiteral("empty_content");
 				fallback(m_pendingObs, action, amount);
 			} else {
-				decideFromText(m_pendingObs, content, action, amount, status);
+				decideFromText(m_pendingObs, content, action, amount, reasoning, status);
 			}
 		}
 	}
 
-	logDecision(m_pendingObs, content, action, amount, status, latency, httpStatus);
+	logDecision(m_pendingObs, content, action, amount, reasoning, status, latency, httpStatus);
 	qInfo() << "[LLM] decision=" << action << "amount=" << amount
-	        << "status=" << status << "latency_ms=" << latency;
-	emit decisionReady(action, amount);
+	        << "status=" << status << "latency_ms=" << latency
+	        << "reasoning=" << reasoning;
+	emit decisionReady(action, amount, reasoning);
 }
 
 void LlmPlayer::decideFromText(const QJsonObject &obs, const QString &content,
-                               QString &outAction, int &outAmount, QString &status) const
+                               QString &outAction, int &outAmount, QString &outReasoning,
+                               QString &status) const
 {
 	// Models occasionally wrap the JSON in markdown fences or prose; grab the
 	// outermost {...} block.
@@ -213,6 +216,8 @@ void LlmPlayer::decideFromText(const QJsonObject &obs, const QString &content,
 		fallback(obs, outAction, outAmount);
 		return;
 	}
+
+	outReasoning = d.value("reasoning").toString().trimmed();
 
 	const QString a = d.value("action").toString().trimmed().toLower();
 	int amt = 0;
@@ -354,8 +359,8 @@ QString LlmPlayer::buildUserPrompt(const QJsonObject &obs) const
 }
 
 void LlmPlayer::logDecision(const QJsonObject &obs, const QString &rawContent,
-                            const QString &action, int amount, const QString &status,
-                            qint64 latencyMs, int httpStatus) const
+                            const QString &action, int amount, const QString &reasoning,
+                            const QString &status, qint64 latencyMs, int httpStatus) const
 {
 	if (m_logPath.isEmpty()) return;
 
@@ -366,6 +371,7 @@ void LlmPlayer::logDecision(const QJsonObject &obs, const QString &rawContent,
 	rec["raw"]         = rawContent;
 	rec["action"]      = action;
 	rec["amount"]      = amount;
+	rec["reasoning"]   = reasoning;
 	rec["status"]      = status;
 	rec["latency_ms"]  = static_cast<double>(latencyMs);
 	rec["http_status"] = httpStatus;

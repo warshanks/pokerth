@@ -1463,7 +1463,7 @@ QJsonObject GameHandler::buildLlmObservation()
     return obs;
 }
 
-void GameHandler::onLlmDecision(const QString &action, int amount)
+void GameHandler::onLlmDecision(const QString &action, int amount, const QString &reasoning)
 {
     m_llmRequestInFlight = false;
 
@@ -1475,6 +1475,15 @@ void GameHandler::onLlmDecision(const QString &action, int amount)
         qDebug() << "[LLM] decision arrived but not hero's turn; dropping" << action;
         return;
     }
+
+    // Surface the model's intended move + reasoning in the in-game action log, so
+    // you can watch its thinking. Shown just before the move is applied.
+    QString thought = QStringLiteral("\u{1F916} ") + action.toUpper();
+    if ((action == QLatin1String("bet") || action == QLatin1String("raise")) && amount > 0)
+        thought += QStringLiteral(" %1").arg(amount);
+    if (!reasoning.isEmpty())
+        thought += QStringLiteral(" — ") + reasoning;
+    appendGameLog(thought, LogSitOut);
 
     if (action == QLatin1String("fold")) {
         fold();

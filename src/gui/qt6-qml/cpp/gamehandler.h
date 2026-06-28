@@ -151,7 +151,7 @@ private slots:
     // LLM eval harness: apply a decision returned by the autonomous LlmPlayer for
     // the hero seat (maps "fold"/"check"/"call"/"raise"/"allin" to the matching
     // submit function above).
-    void onLlmDecision(const QString &action, int amount);
+    void onLlmDecision(const QString &action, int amount, const QString &reasoning);
 
 signals:
     void playersChanged();

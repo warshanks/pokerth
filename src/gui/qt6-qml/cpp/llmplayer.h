@@ -54,8 +54,9 @@ signals:
 	// A legal, ready-to-apply decision. action is one of:
 	//   "fold", "check", "call", "bet", "raise", "allin".
 	// For "bet"/"raise", amount is the additional-chips value to pass straight to
-	// GameHandler::raise(); 0 for every other action.
-	void decisionReady(const QString &action, int amount);
+	// GameHandler::raise(); 0 for every other action. reasoning is the model's
+	// short self-explanation (may be empty), for display/logging only.
+	void decisionReady(const QString &action, int amount, const QString &reasoning);
 
 private slots:
 	void onReplyFinished();
@@ -67,12 +68,13 @@ private:
 	// obs. Fills outAction/outAmount with a legal move; sets status to "ok" or a
 	// short diagnostic ("raise_clamped_max", "unknown_action:foo", ...).
 	void decideFromText(const QJsonObject &obs, const QString &content,
-	                    QString &outAction, int &outAmount, QString &status) const;
+	                    QString &outAction, int &outAmount, QString &outReasoning,
+	                    QString &status) const;
 	// Safe legal fallback: check if free, otherwise fold.
 	void fallback(const QJsonObject &obs, QString &outAction, int &outAmount) const;
 	void logDecision(const QJsonObject &obs, const QString &rawContent,
-	                 const QString &action, int amount, const QString &status,
-	                 qint64 latencyMs, int httpStatus) const;
+	                 const QString &action, int amount, const QString &reasoning,
+	                 const QString &status, qint64 latencyMs, int httpStatus) const;
 
 	bool m_enabled = false;
 	QString m_endpoint;
