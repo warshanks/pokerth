@@ -1208,12 +1208,8 @@ void GameHandler::onNextRoundCleanGui()
     m_boardCards = QVariantList{-1, -1, -1, -1, -1};
     emit boardCardCountChanged();
     emit boardCardsChanged();
-    // Hide the chance panel between hands.
-    if (!m_heroHandName.isEmpty() || !m_heroHandChances.isEmpty()) {
-        m_heroHandName.clear();
-        m_heroHandChances.clear();
-        emit heroHandChanged();
-    }
+    // Keep the chance panel populated between hands (it shows the last hand until
+    // the next one is dealt); it is refreshed for the new hand in onAfterDealCards.
     if (!m_winnerSeatIds.isEmpty()) {
         m_winnerSeatIds.clear();
         emit winnerSeatIdsChanged();
@@ -1922,6 +1918,14 @@ void GameHandler::endLocalGame()
     // Ausstehende Busted-Player-Timer abbrechen.
     qDeleteAll(m_bustedLocalTimers);
     m_bustedLocalTimers.clear();
+
+    // Clear the chance panel when leaving the game (it persists between hands, but
+    // should not linger into a new game).
+    if (!m_heroHandName.isEmpty() || !m_heroHandChances.isEmpty()) {
+        m_heroHandName.clear();
+        m_heroHandChances.clear();
+        emit heroHandChanged();
+    }
 
     if (m_myTurn) {
         m_myTurn = false;
