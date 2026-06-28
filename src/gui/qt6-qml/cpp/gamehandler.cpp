@@ -1140,10 +1140,11 @@ void GameHandler::refreshHeroHand()
                 auto hero = seats->front();
                 int hc[2] = {-1, -1};
                 hero->getMyCards(hc);
-                const bool live = hc[0] >= 0 && hc[1] >= 0
-                                  && hero->getMyAction() != PLAYER_ACTION_FOLD
-                                  && hero->getMyActiveStatus();
-                if (live) {
+                // Show whenever we hold hole cards this hand — even after folding
+                // or when not contesting the pot. The board still runs out and the
+                // odds stay informative ("what your hand would have become").
+                const bool haveCards = hc[0] >= 0 && hc[1] >= 0;
+                if (haveCards) {
                     // getMyCardsValueInt() is computed once at hand setup over the
                     // FULL (pre-shuffled) board, so pre-river it is the final hand —
                     // showing it early would leak future cards. Only name the made
