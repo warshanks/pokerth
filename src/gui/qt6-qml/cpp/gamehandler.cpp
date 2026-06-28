@@ -1121,6 +1121,70 @@ void GameHandler::refreshBoardCards()
         m_boardCards = newCards;
         emit boardCardsChanged();
     }
+
+    // Keep the "chance" panel in sync with the board.
+    refreshHeroHand();
+}
+
+void GameHandler::refreshHeroHand()
+{
+    QString name;
+    QVariantList chances;
+
+    if (m_game) {
+        auto hand = m_game->getCurrentHand();
+        if (hand) {
+            auto seats = hand->getSeatsList();
+            auto board = hand->getBoard();
+            if (seats && !seats->empty() && board) {
+                auto hero = seats->front();
+                int hc[2] = {-1, -1};
+                hero->getMyCards(hc);
+                const bool live = hc[0] >= 0 && hc[1] >= 0
+                                  && hero->getMyAction() != PLAYER_ACTION_FOLD
+                                  && hero->getMyActiveStatus();
+                if (live) {
+                    // Current made hand (engine updates cardsValueInt each street).
+                    const int cvi = hero->getMyCardsValueInt();
+                    if (cvi > 0)
+                        name = QString::fromStdString(
+                            CardsValue::determineHandName(cvi, m_game->getActivePlayerList()));
+
+                    // Per-category odds — mirrors the Qt-widgets chance monitor.
+                    int holeCards[2]  = { hc[0], hc[1] };
+                    int boardCards[5] = { 0, 0, 0, 0, 0 };
+                    board->getMyCards(boardCards);
+                    // Clamp post-river (showdown) to river so the final made hand
+                    // shows at 100% instead of an empty (uncomputed) table.
+                    int r = static_cast<int>(hand->getCurrentRound());
+                    if (r > GAME_STATE_RIVER) r = GAME_STATE_RIVER;
+                    std::vector<std::vector<int>> ch =
+                        CardsValue::calcCardsChance(static_cast<GameState>(r), holeCards, boardCards);
+
+                    static const char *catNames[10] = {
+                        "High Card", "One Pair", "Two Pair", "Three of a Kind", "Straight",
+                        "Flush", "Full House", "Four of a Kind", "Straight Flush", "Royal Flush"
+                    };
+                    if (ch.size() >= 2 && ch[0].size() >= 10 && ch[1].size() >= 10) {
+                        // High → low (Royal Flush first), like the widgets panel.
+                        for (int i = 9; i >= 0; --i) {
+                            QVariantMap row;
+                            row["label"]    = QString::fromLatin1(catNames[i]);
+                            row["pct"]      = ch[0][i];
+                            row["possible"] = ch[1][i] != 0;
+                            chances.append(row);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (name != m_heroHandName || chances != m_heroHandChances) {
+        m_heroHandName = name;
+        m_heroHandChances = chances;
+        emit heroHandChanged();
+    }
 }
 
 void GameHandler::onNextRoundCleanGui()
@@ -1139,6 +1203,12 @@ void GameHandler::onNextRoundCleanGui()
     m_boardCards = QVariantList{-1, -1, -1, -1, -1};
     emit boardCardCountChanged();
     emit boardCardsChanged();
+    // Hide the chance panel between hands.
+    if (!m_heroHandName.isEmpty() || !m_heroHandChances.isEmpty()) {
+        m_heroHandName.clear();
+        m_heroHandChances.clear();
+        emit heroHandChanged();
+    }
     if (!m_winnerSeatIds.isEmpty()) {
         m_winnerSeatIds.clear();
         emit winnerSeatIdsChanged();
@@ -1889,6 +1959,9 @@ void GameHandler::onAfterDealCards()
     if (!m_game) return;
     auto hand = m_game->getCurrentHand();
     if (!hand) return;
+
+    // Show the "chance" panel as soon as hole cards are known (preflop).
+    refreshHeroHand();
 
     // Think ahead on the hole cards before the preflop betting round runs. (The
     // reply is async, so it usually informs later streets rather than a preflop

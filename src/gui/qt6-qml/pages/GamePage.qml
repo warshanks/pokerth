@@ -1523,6 +1523,91 @@ Rectangle {
                 }
             }
 
+            // ── "Chance"-Panel: aktuelle Hand des Hero + Wahrscheinlichkeit je
+            //    Hand-Kategorie (wie der Widgets-Chance-Monitor), oben links. ────
+            Item {
+                id: chancePanel
+                z: 150
+                anchors.left: parent.left
+                anchors.top: parent.top
+                anchors.leftMargin: 8
+                anchors.topMargin: 8
+                width: 212
+                implicitHeight: chanceCol.implicitHeight + 20
+                height: implicitHeight
+                visible: (typeof GameTable !== "undefined" && GameTable
+                          && GameTable.heroHandChances && GameTable.heroHandChances.length > 0)
+
+                Rectangle {
+                    id: chanceSheet
+                    anchors.fill: parent
+                    radius: 14
+                    color: Config.Theme.withAlpha(Config.StaticData.palette.secondary.col700, 0.92)
+                    border.color: Config.StaticData.palette.secondary.col500
+                    border.width: 1
+                }
+
+                ColumnLayout {
+                    id: chanceCol
+                    anchors.fill: chanceSheet
+                    anchors.margins: 10
+                    spacing: 3
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: qsTr("Your hand")
+                        color: Config.Theme.colorAccent
+                        font.family: Config.StaticData.loadedFont.font.family
+                        font.pixelSize: 13
+                        font.bold: true
+                        font.letterSpacing: 0.4
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: text.length > 0
+                        text: (typeof GameTable !== "undefined" && GameTable) ? GameTable.heroHandName : ""
+                        color: Config.StaticData.palette.secondary.col100
+                        font.family: Config.StaticData.loadedFont.font.family
+                        font.pixelSize: 12
+                        font.bold: true
+                        wrapMode: Text.WordWrap
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 1
+                        color: Config.Theme.withAlpha(Config.StaticData.palette.secondary.col500, 0.5)
+                    }
+                    Repeater {
+                        model: (typeof GameTable !== "undefined" && GameTable) ? GameTable.heroHandChances : []
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Text {
+                                Layout.fillWidth: true
+                                text: modelData.label
+                                color: modelData.possible
+                                       ? Config.StaticData.palette.secondary.col100
+                                       : Config.Theme.withAlpha(Config.StaticData.palette.secondary.col300, 0.45)
+                                font.family: Config.StaticData.loadedFont.font.family
+                                font.pixelSize: 11
+                            }
+                            Text {
+                                text: modelData.pct + "%"
+                                horizontalAlignment: Text.AlignRight
+                                Layout.preferredWidth: 36
+                                color: modelData.possible
+                                       ? Config.Theme.colorAccent
+                                       : Config.Theme.withAlpha(Config.StaticData.palette.secondary.col300, 0.45)
+                                font.family: Config.StaticData.loadedFont.font.family
+                                font.pixelSize: 11
+                                font.bold: modelData.possible
+                            }
+                        }
+                    }
+                }
+            }
+
             Item {
                 id: logOverlay
                 z: 150

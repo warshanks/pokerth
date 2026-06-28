@@ -57,6 +57,11 @@ class GameHandler : public QObject
     Q_PROPERTY(bool hasHumanOpponents READ hasHumanOpponents NOTIFY hasHumanOpponentsChanged)
     // true im Post-River, wenn der Mensch-Spieler seine Karten freiwillig zeigen kann
     Q_PROPERTY(bool canShowCards READ canShowCards NOTIFY canShowCardsChanged)
+    // "Chance"-Anzeige (wie im Widgets-Client): aktuelle Hand des Hero-Sitzes und
+    // die Wahrscheinlichkeit je Hand-Kategorie. heroHandChances ist eine Liste von
+    // {label, pct, possible}, von Royal Flush (oben) bis High Card.
+    Q_PROPERTY(QString heroHandName READ heroHandName NOTIFY heroHandChanged)
+    Q_PROPERTY(QVariantList heroHandChances READ heroHandChances NOTIFY heroHandChanged)
 
 public:
     explicit GameHandler(QObject *parent = nullptr);
@@ -92,6 +97,8 @@ public:
     QStringList chatLog() const { return m_chatLog; }
     bool hasHumanOpponents() const { return m_hasHumanOpponents; }
     bool canShowCards() const { return m_canShowCards; }
+    QString heroHandName() const { return m_heroHandName; }
+    QVariantList heroHandChances() const { return m_heroHandChances; }
 
     // Zeilentyp für die Einfärbung des Spielverlaufs – Farben/Stil 1:1 wie der
     // Qt-Widgets-Client (Default-Tischstil).
@@ -202,6 +209,7 @@ signals:
     void chatLogChanged();
     void hasHumanOpponentsChanged();
     void canShowCardsChanged();
+    void heroHandChanged();
     // Emoji-Reaktion empfangen (Chat-Konvention "/emoji 🎉" des Web-Clients) –
     // wird nicht im Chat angezeigt, sondern als Animation am Sitz abgespielt.
     void reactionReceived(const QString &playerName, const QString &emoji);
@@ -218,6 +226,8 @@ private:
     void refreshPlayerData();
     void refreshBoardCards();
     void refreshPotData();
+    // Recompute the hero's current made hand + per-category odds ("chance" panel).
+    void refreshHeroHand();
     void computeCallAndRaiseAmounts();
     // Lokales Spiel: Spieler mit 0 Coins nach 10 Sekunden aus der Anzeige
     // entfernen (analog zu onNetClientPlayerLeft bei Online-Spielen).
@@ -304,6 +314,8 @@ private:
     QStringList m_chatLog;      // In-Game-Chat-Verlauf
     bool m_hasHumanOpponents = false;
     bool m_canShowCards = false;
+    QString m_heroHandName;
+    QVariantList m_heroHandChances;
     // Showdown aktiv: erst dann dürfen Gegnerkarten aufgedeckt werden. Verhindert,
     // dass die (noch veraltete) playerNeedToShowCards-Liste während der River-
     // Setzrunde der nächsten Hand fälschlich Karten aufdeckt.
