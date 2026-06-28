@@ -208,6 +208,7 @@ GameHandler::GameHandler(QObject *parent)
     // a no-op unless POKERTH_LLM_ENABLE=1 and an endpoint are set).
     m_llm = new LlmPlayer(this);
     connect(m_llm, &LlmPlayer::decisionReady, this, &GameHandler::onLlmDecision);
+    connect(m_llm, &LlmPlayer::analysisReady, this, &GameHandler::onLlmAnalysis);
 }
 
 bool GameHandler::eventFilter(QObject *watched, QEvent *event)
@@ -932,10 +933,15 @@ void GameHandler::onMeInAction()
     // waiting on seat 0, so the async request runs on the Qt event loop and the
     // resulting onLlmDecision() submits the move exactly like a button press.
     if (llmAutopilotActive() && !m_llmRequestInFlight) {
-        const QJsonObject obs = buildLlmObservation();
-        if (!obs.isEmpty()) {
-            m_llmRequestInFlight = true;
-            m_llm->requestDecision(obs);
+        // First try an instant premove from the model's think-ahead plan; only if
+        // none applies (no current plan, or the situation changed) do we make a
+        // fresh decision call.
+        if (!tryApplyLlmPremove()) {
+            const QJsonObject obs = buildLlmObservation();
+            if (!obs.isEmpty()) {
+                m_llmRequestInFlight = true;
+                m_llm->requestDecision(obs);
+            }
         }
     }
 
@@ -1161,6 +1167,8 @@ void GameHandler::onDealFlopCards()
     m_boardCardCount = 3;
     emit boardCardCountChanged();
     refreshBoardCards();
+    // Think ahead: the flop just landed — plan before action reaches the hero.
+    maybeRequestLlmAnalysis();
 }
 
 void GameHandler::onDealTurnCard()
@@ -1169,6 +1177,7 @@ void GameHandler::onDealTurnCard()
     m_boardCardCount = 4;
     emit boardCardCountChanged();
     refreshBoardCards();
+    maybeRequestLlmAnalysis();
 }
 
 void GameHandler::onDealRiverCard()
@@ -1177,6 +1186,7 @@ void GameHandler::onDealRiverCard()
     m_boardCardCount = 5;
     emit boardCardCountChanged();
     refreshBoardCards();
+    maybeRequestLlmAnalysis();
 }
 
 // ─── Q_INVOKABLE actions called from QML ────────────────────────────────────
@@ -1469,6 +1479,10 @@ QJsonObject GameHandler::buildLlmObservation()
     if (!m_llmHandActions.isEmpty())
         obs["hand_history"] = m_llmHandActions;
 
+    // The model's own running analysis this hand (its earlier think-ahead notes).
+    if (!m_llmThoughts.isEmpty())
+        obs["my_prior_thoughts"] = m_llmThoughts;
+
     // Context layer 2: compact summaries of recent finished hands (incl. ones the
     // hero folded), so the model can review how they played out.
     if (!m_llmRecentHands.isEmpty()) {
@@ -1519,6 +1533,9 @@ void GameHandler::resetLlmContext()
     m_llmHandPot = 0;
     m_llmCurrentHandId = -1;
     m_llmRecentHands.clear();
+    m_llmThoughts = QJsonArray();
+    m_llmPremove = QJsonObject();
+    m_llmAnalysisInFlight = false;
 }
 
 void GameHandler::onLlmRecordAction(const QString &name, int action, int amount)
@@ -1578,6 +1595,10 @@ void GameHandler::onLlmHandStart(int handId)
     m_llmHandWinners.clear();
     m_llmHandPot = 0;
     m_llmCurrentHandId = handId;
+
+    // Fresh hand: clear the running analysis and any stale premove plan.
+    m_llmThoughts = QJsonArray();
+    m_llmPremove = QJsonObject();
 }
 
 void GameHandler::onLlmHandWinner(const QString &name, int pot, bool mainPot)
@@ -1638,28 +1659,34 @@ void GameHandler::onLlmDecision(const QString &action, int amount, const QString
         thought += QStringLiteral(" — ") + reasoning;
     appendGameLog(thought, LogSitOut);
 
+    applyLlmAction(action, amount);
+}
+
+void GameHandler::applyLlmAction(const QString &action, int amount)
+{
     // Record the hero's move into the within-hand betting history (opponents are
     // recorded via onLlmRecordAction).
-    {
-        int heroAmt = 0;
-        if (action == QLatin1String("bet") || action == QLatin1String("raise"))
-            heroAmt = amount;
-        else if (action == QLatin1String("call"))
-            heroAmt = m_callAmount;
-        else if (action == QLatin1String("allin"))
-            heroAmt = m_maxRaiseAmount;
-        int round = -1;
-        if (m_game) {
-            auto h = m_game->getCurrentHand();
-            if (h) round = static_cast<int>(h->getCurrentRound());
-        }
-        QJsonObject a;
-        a["street"] = roundName(round);
-        a["name"]   = llmHeroName();
-        a["action"] = action;
-        if (heroAmt > 0) a["amount"] = heroAmt;
-        m_llmHandActions.append(a);
+    int heroAmt = 0;
+    if (action == QLatin1String("bet") || action == QLatin1String("raise"))
+        heroAmt = amount;
+    else if (action == QLatin1String("call"))
+        heroAmt = m_callAmount;
+    else if (action == QLatin1String("allin"))
+        heroAmt = m_maxRaiseAmount;
+    int round = -1;
+    if (m_game) {
+        auto h = m_game->getCurrentHand();
+        if (h) round = static_cast<int>(h->getCurrentRound());
     }
+    QJsonObject a;
+    a["street"] = roundName(round);
+    a["name"]   = llmHeroName();
+    a["action"] = action;
+    if (heroAmt > 0) a["amount"] = heroAmt;
+    m_llmHandActions.append(a);
+
+    // A new hero action this street invalidates any premove that hasn't fired.
+    m_llmPremove = QJsonObject();
 
     if (action == QLatin1String("fold")) {
         fold();
@@ -1673,6 +1700,98 @@ void GameHandler::onLlmDecision(const QString &action, int amount, const QString
         qWarning() << "[LLM] unexpected action" << action << "- falling back to call/check";
         call();
     }
+}
+
+void GameHandler::maybeRequestLlmAnalysis()
+{
+    // llmAutopilotActive() requires the hero to be live in the hand but NOT that
+    // it's currently the hero's turn — exactly right for between-turn thinking.
+    if (!llmAutopilotActive()) return;
+    if (m_llmAnalysisInFlight || m_llmRequestInFlight) return;
+    const QJsonObject obs = buildLlmObservation();
+    if (obs.isEmpty()) return;
+    m_llmAnalysisInFlight = true;
+    appendGameLog(QStringLiteral("\u{1F916}\u{1F4AD} thinking ahead (%1)…")
+                  .arg(obs.value("round").toString()), LogNormal);
+    m_llm->requestAnalysis(obs);
+}
+
+void GameHandler::onLlmAnalysis(const QJsonObject &plan)
+{
+    m_llmAnalysisInFlight = false;
+    if (!m_llm || !m_llm->enabled()) return;
+    if (plan.isEmpty()) return;
+
+    // Keep the running analysis (fed back into later prompts) and the latest
+    // premove plan (applied instantly when the hero's turn matches).
+    QJsonObject note;
+    note["street"] = plan.value("street");
+    note["read"]   = plan.value("read");
+    note["plan"]   = plan.value("plan");
+    m_llmThoughts.append(note);
+    m_llmPremove = plan;
+
+    // Surface the model's plan in the game log ("more info").
+    const QString read = plan.value("read").toString();
+    const QString planText = plan.value("plan").toString();
+    if (!read.isEmpty())
+        appendGameLog(QStringLiteral("\u{1F916}\u{1F4AD} read: ") + read, LogNormal);
+    if (!planText.isEmpty())
+        appendGameLog(QStringLiteral("\u{1F916}\u{1F4AD} plan: ") + planText, LogNormal);
+}
+
+bool GameHandler::tryApplyLlmPremove()
+{
+    if (m_llmPremove.isEmpty()) return false;
+    if (!m_game) return false;
+    auto hand = m_game->getCurrentHand();
+    if (!hand) return false;
+
+    // Stale-plan guard: only use a premove made for the CURRENT street.
+    if (m_llmPremove.value("street").toString() != roundName(static_cast<int>(hand->getCurrentRound())))
+        return false;
+
+    // Pick the branch that matches the live situation.
+    const bool facingBet = (m_callAmount > 0);
+    const QJsonObject branch = m_llmPremove.value(facingBet ? "if_facing_bet" : "if_checked_to_me").toObject();
+    if (branch.isEmpty()) return false;
+
+    QString act = branch.value("action").toString().trimmed().toLower();
+    int amt = branch.value("amount").toInt();
+    const bool canRaise = (m_minRaiseAmount > 0 && m_maxRaiseAmount >= m_minRaiseAmount);
+
+    // Validate/clamp against the live legal options; bail (→ fresh decision) if the
+    // plan no longer fits, e.g. it wanted to check but now faces a bet, or it would
+    // be forced all-in unexpectedly (situation changed → re-think).
+    QString resolved;
+    int resolvedAmt = 0;
+    if (act == "fold") {
+        resolved = QStringLiteral("fold");
+    } else if (act == "check") {
+        if (facingBet) return false;            // can't check facing a bet → re-think
+        resolved = QStringLiteral("check");
+    } else if (act == "call") {
+        if (!facingBet) { resolved = QStringLiteral("check"); }
+        else if (m_callAmount >= m_maxRaiseAmount && m_maxRaiseAmount > 0) return false; // would be an all-in call → re-think
+        else resolved = QStringLiteral("call");
+    } else if (act == "bet" || act == "raise") {
+        if (!canRaise) return false;
+        if (amt < m_minRaiseAmount) amt = m_minRaiseAmount;
+        if (amt > m_maxRaiseAmount) amt = m_maxRaiseAmount;
+        resolved = (amt >= m_maxRaiseAmount) ? QStringLiteral("allin") : QStringLiteral("raise");
+        resolvedAmt = amt;
+    } else if (act == "allin") {
+        if (!canRaise) return false;
+        resolved = QStringLiteral("allin");
+        resolvedAmt = m_maxRaiseAmount;
+    } else {
+        return false;
+    }
+
+    appendGameLog(QStringLiteral("\u{1F916}⚡ premove: ") + resolved.toUpper()
+                  + (resolvedAmt > 0 ? QStringLiteral(" %1").arg(resolvedAmt) : QString()), LogSitOut);
+    applyLlmAction(resolved, resolvedAmt);   // applyLlmAction clears m_llmPremove
+    return true;
 }
 
 void GameHandler::startLocalGame()
@@ -1770,6 +1889,11 @@ void GameHandler::onAfterDealCards()
     if (!m_game) return;
     auto hand = m_game->getCurrentHand();
     if (!hand) return;
+
+    // Think ahead on the hole cards before the preflop betting round runs. (The
+    // reply is async, so it usually informs later streets rather than a preflop
+    // premove, but it seeds the running analysis.)
+    maybeRequestLlmAnalysis();
 
     if (hand->getAllInCondition()) {
         hand->switchRounds();

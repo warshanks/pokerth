@@ -50,6 +50,13 @@ public:
 	// expected to serialise calls (one decision in flight at a time).
 	void requestDecision(const QJsonObject &observation);
 
+	// Kick off ONE asynchronous "think ahead" analysis for the given observation.
+	// Used between turns (e.g. when a board card is dealt) so the model can plan
+	// before the action reaches it. Emits analysisReady() with a structured plan
+	// (read, plan text, and conditional premove branches). Independent of the
+	// decision path — never applies a move itself.
+	void requestAnalysis(const QJsonObject &observation);
+
 signals:
 	// A legal, ready-to-apply decision. action is one of:
 	//   "fold", "check", "call", "bet", "raise", "allin".
@@ -58,12 +65,22 @@ signals:
 	// short self-explanation (may be empty), for display/logging only.
 	void decisionReady(const QString &action, int amount, const QString &reasoning);
 
+	// A "think ahead" plan for the current spot. plan contains: "read", "plan"
+	// (free text), "street", and optional "if_checked_to_me"/"if_facing_bet"
+	// objects ({action, amount}) used as premoves. Empty object on failure.
+	void analysisReady(const QJsonObject &plan);
+
 private slots:
 	void onReplyFinished();
+	void onAnalysisFinished();
 
 private:
 	QString buildSystemPrompt() const;
 	QString buildUserPrompt(const QJsonObject &obs) const;
+	QString buildAnalysisSystemPrompt() const;
+	QString buildAnalysisUserPrompt(const QJsonObject &obs) const;
+	// Extract the assistant message content from an OpenAI-style reply body.
+	QString extractContent(const QByteArray &data) const;
 	// Parse the model's reply text and map+clamp it against the legal options in
 	// obs. Fills outAction/outAmount with a legal move; sets status to "ok" or a
 	// short diagnostic ("raise_clamped_max", "unknown_action:foo", ...).
@@ -82,6 +99,9 @@ private:
 	QString m_apiKey;
 	double m_temperature = 0.7;
 	int m_timeoutMs = 30000;
+	// Output token budget. Decisions return short JSON; analysis is allowed to
+	// reason at length (uses the large context window). POKERTH_LLM_MAX_TOKENS.
+	int m_maxTokens = 1024;
 	// Send {"response_format":{"type":"json_object"}} (OpenAI/vLLM/llama.cpp). Set
 	// POKERTH_LLM_JSON_MODE=0 for servers that reject the field.
 	bool m_jsonMode = true;
@@ -92,6 +112,10 @@ private:
 	// the reply arrives. Safe because callers keep one request in flight.
 	QJsonObject m_pendingObs;
 	qint64 m_requestStartMs = 0;
+	// Separate state for the "think ahead" analysis request, which may overlap a
+	// decision request (independent OpenAI calls).
+	QJsonObject m_pendingAnalysisObs;
+	qint64 m_analysisStartMs = 0;
 };
 
 #endif // LLMPLAYER_H
