@@ -175,9 +175,6 @@ private slots:
     // the hero seat (maps "fold"/"check"/"call"/"raise"/"allin" to the matching
     // submit function above).
     void onLlmDecision(const QString &action, int amount, const QString &reasoning);
-    // A "think ahead" plan arrived: store it, surface it in the log, and keep its
-    // premove branches for instant application when the hero's turn comes.
-    void onLlmAnalysis(const QJsonObject &plan);
 
 signals:
     void playersChanged();
@@ -252,12 +249,6 @@ private:
     void resetLlmContext();
     // Name of the hero (seat 0), used to exclude it from opponent stats.
     QString llmHeroName() const;
-    // Fire a "think ahead" analysis for the hero if it's worthwhile right now
-    // (autopilot on, hero still in the hand, nothing already in flight).
-    void maybeRequestLlmAnalysis();
-    // If a current, applicable premove plan exists for the live spot, apply it
-    // immediately and return true; otherwise return false (caller decides fresh).
-    bool tryApplyLlmPremove();
     // Apply a resolved action ("fold"/"check"/"call"/"bet"/"raise"/"allin").
     void applyLlmAction(const QString &action, int amount);
 
@@ -280,12 +271,9 @@ private:
     int m_llmHandPot = 0;                 // total chips awarded this hand
     int m_llmCurrentHandId = -1;
     QList<QJsonObject> m_llmRecentHands;  // finished-hand summaries (oldest first)
-    static constexpr int kLlmMaxRecentHands = 8;
-    // "Think ahead": the model's running analysis this hand and the latest premove
-    // plan (with the street it was made for, so we don't apply a stale one).
-    QJsonArray m_llmThoughts;             // [{street, read, plan}] this hand
-    QJsonObject m_llmPremove;             // {street, if_checked_to_me, if_facing_bet}
-    bool m_llmAnalysisInFlight = false;
+    // Per-session memory of finished-hand outcomes the model learns from. Generous
+    // (the context window is large); one compact line each.
+    static constexpr int kLlmMaxRecentHands = 40;
     SoundEvents *m_soundEventHandler = nullptr;
     QTimer *m_timeoutBeepTimer = nullptr;
     // Ratenbegrenzung für AFK-Reset (ResetTimeoutMessage). Wie der Widgets-

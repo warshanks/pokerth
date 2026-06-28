@@ -152,78 +152,6 @@ void LlmPlayer::requestDecision(const QJsonObject &observation)
 	connect(reply, &QNetworkReply::finished, this, &LlmPlayer::onReplyFinished);
 }
 
-QString LlmPlayer::extractContent(const QByteArray &data) const
-{
-	QJsonParseError pe;
-	const QJsonDocument doc = QJsonDocument::fromJson(data, &pe);
-	if (pe.error != QJsonParseError::NoError || !doc.isObject())
-		return QString();
-	return doc.object()
-	       .value("choices").toArray().at(0).toObject()
-	       .value("message").toObject()
-	       .value("content").toString();
-}
-
-void LlmPlayer::requestAnalysis(const QJsonObject &observation)
-{
-	m_pendingAnalysisObs = observation;
-	m_analysisStartMs = QDateTime::currentMSecsSinceEpoch();
-
-	QJsonArray messages;
-	messages.append(QJsonObject{{"role", "system"}, {"content", buildAnalysisSystemPrompt()}});
-	messages.append(QJsonObject{{"role", "user"},   {"content", buildAnalysisUserPrompt(observation)}});
-
-	QJsonObject body;
-	body["model"]       = m_model;
-	body["messages"]    = messages;
-	body["temperature"] = m_temperature;
-	// Allow the analysis to reason at length (uses the large context window).
-	body["max_tokens"]  = m_maxTokens * 2;
-	if (m_jsonMode)
-		body["response_format"] = QJsonObject{{"type", "json_object"}};
-
-	QNetworkRequest req{QUrl(m_endpoint)};
-	req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-	if (!m_apiKey.isEmpty())
-		req.setRawHeader("Authorization", QByteArray("Bearer ") + m_apiKey.toUtf8());
-	req.setTransferTimeout(m_timeoutMs);
-
-	QNetworkReply *reply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-	connect(reply, &QNetworkReply::finished, this, &LlmPlayer::onAnalysisFinished);
-}
-
-void LlmPlayer::onAnalysisFinished()
-{
-	QNetworkReply *reply = qobject_cast<QNetworkReply *>(sender());
-	if (!reply) return;
-	reply->deleteLater();
-
-	const qint64 latency = QDateTime::currentMSecsSinceEpoch() - m_analysisStartMs;
-
-	QJsonObject plan;
-	if (reply->error() == QNetworkReply::NoError) {
-		const QString content = extractContent(reply->readAll());
-		const int b = content.indexOf('{');
-		const int e = content.lastIndexOf('}');
-		if (b >= 0 && e > b) {
-			QJsonParseError pe;
-			const QJsonDocument doc = QJsonDocument::fromJson(content.mid(b, e - b + 1).toUtf8(), &pe);
-			if (pe.error == QJsonParseError::NoError && doc.isObject())
-				plan = doc.object();
-		}
-	} else {
-		qInfo() << "[LLM] analysis http error:" << reply->errorString();
-	}
-
-	// Carry the street so the consumer can tell whether the plan is still current.
-	if (!plan.isEmpty() && !plan.contains("street"))
-		plan["street"] = m_pendingAnalysisObs.value("round");
-
-	qInfo() << "[LLM] analysis ready latency_ms=" << latency
-	        << "plan=" << QString::fromUtf8(QJsonDocument(plan).toJson(QJsonDocument::Compact));
-	emit analysisReady(plan);
-}
-
 void LlmPlayer::onReplyFinished()
 {
 	QNetworkReply *reply = qobject_cast<QNetworkReply *>(sender());
@@ -366,9 +294,11 @@ QString LlmPlayer::buildSystemPrompt() const
 		"to call. For a bet or raise, \"amount\" is the TOTAL additional chips you "
 		"put in this turn (it must be between \"min_raise\" and \"max_raise\", where "
 		"\"max_raise\" means all-in).\n\n"
-		"You may also be given the betting action so far this hand, summaries of "
-		"recent finished hands (including ones you folded), and per-opponent "
-		"tendencies. Use them to read opponents and inform your decision.\n\n"
+		"You are also given the betting action so far this hand, your current hand "
+		"odds (probability of finishing with each category), summaries of recent "
+		"finished hands this session (including ones you folded), and per-opponent "
+		"tendencies. Use them to read opponents, learn from outcomes, and inform "
+		"your decision.\n\n"
 		"Respond with ONLY a single JSON object, no prose, no markdown, in exactly "
 		"this form:\n"
 		"{\"action\": \"<fold|check|call|bet|raise|allin>\", \"amount\": <int>, "
@@ -445,21 +375,20 @@ QString LlmPlayer::buildUserPrompt(const QJsonObject &obs) const
 		}
 	}
 
-	// The model's own earlier think-ahead notes for this hand.
+	// Your current hand odds: chance of finishing with each category by the river,
+	// given only the visible cards (a fair, no-leak equity read).
 	{
-		const QJsonArray thoughts = obs.value("my_prior_thoughts").toArray();
-		if (!thoughts.isEmpty()) {
-			lines << QStringLiteral("Your earlier notes this hand:");
-			for (const auto &tv : thoughts) {
-				const QJsonObject t = tv.toObject();
-				const QString read = t.value("read").toString();
-				const QString plan = t.value("plan").toString();
-				QString l = QStringLiteral("  [%1]").arg(t.value("street").toString());
-				if (!read.isEmpty()) l += QStringLiteral(" read: %1").arg(read);
-				if (!plan.isEmpty()) l += QStringLiteral(" plan: %1").arg(plan);
-				lines << l;
-			}
+		const QJsonArray odds = obs.value("hand_odds").toArray();
+		QStringList parts;
+		for (const auto &ov : odds) {
+			const QJsonObject o = ov.toObject();
+			if (!o.value("possible").toBool()) continue;       // skip impossible categories
+			const int pct = o.value("pct").toInt();
+			if (pct <= 0) continue;
+			parts << QStringLiteral("%1 %2%").arg(o.value("label").toString()).arg(pct);
 		}
+		if (!parts.isEmpty())
+			lines << QStringLiteral("Your hand odds (by river): ") + parts.join(", ");
 	}
 
 	// Recent finished hands (incl. ones you folded), so you can read opponents.
@@ -518,41 +447,12 @@ QString LlmPlayer::buildUserPrompt(const QJsonObject &obs) const
 	core.remove(QStringLiteral("hand_history"));
 	core.remove(QStringLiteral("recent_hands"));
 	core.remove(QStringLiteral("opponent_stats"));
-	core.remove(QStringLiteral("my_prior_thoughts"));
+	core.remove(QStringLiteral("hand_odds"));
 	lines << QStringLiteral("Core state JSON:");
 	lines << QString::fromUtf8(QJsonDocument(core).toJson(QJsonDocument::Compact));
 	lines << QString();
 	lines << QStringLiteral("Respond with only the JSON decision object.");
 	return lines.join('\n');
-}
-
-QString LlmPlayer::buildAnalysisSystemPrompt() const
-{
-	return QStringLiteral(
-		"You are an expert No-Limit Texas Hold'em player thinking AHEAD. It is NOT "
-		"yet your turn to act — use this time to read the situation and pre-plan, so "
-		"that when the action reaches you, your decision is sharp.\n\n"
-		"You are given the full table state, the betting action so far, recent hands "
-		"and opponent tendencies. Reason as deeply as you like, then output ONLY a "
-		"single JSON object, no prose, no markdown, in exactly this form:\n"
-		"{\"read\": \"<your read on opponents/board>\", "
-		"\"plan\": \"<your plan for this street>\", "
-		"\"if_checked_to_me\": {\"action\": \"<check|bet>\", \"amount\": <int>}, "
-		"\"if_facing_bet\": {\"action\": \"<fold|call|raise|allin>\", \"amount\": <int>}}\n\n"
-		"\"if_checked_to_me\" is what you'll do if no one bets before you; "
-		"\"if_facing_bet\" is what you'll do if you face a normal bet/raise. For a "
-		"bet/raise, \"amount\" is the TOTAL additional chips you'd put in; use 0 "
-		"otherwise. These are your intended premoves — make them concrete and legal.");
-}
-
-QString LlmPlayer::buildAnalysisUserPrompt(const QJsonObject &obs) const
-{
-	// Reuse the rich decision prompt for the situation, then ask for a plan rather
-	// than an immediate action.
-	QString s = buildUserPrompt(obs);
-	s += QStringLiteral("\n\nIt is NOT your turn yet. Think ahead and respond with "
-	                    "only the JSON plan object described in the system message.");
-	return s;
 }
 
 void LlmPlayer::logDecision(const QJsonObject &obs, const QString &rawContent,
