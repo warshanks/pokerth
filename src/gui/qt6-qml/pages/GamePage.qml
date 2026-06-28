@@ -1945,6 +1945,8 @@ Rectangle {
             // ── Emoji-Reaktions-Picker: Toggle rechts neben dem Chat-Icon ──────
             Rectangle {
                 id: reactionToggle
+                // Hidden: emoji reactions are not used in the LLM eval view.
+                visible: false
                 z: 200
                 anchors.top: parent.top
                 anchors.left: chatToggle.visible ? chatToggle.right : parent.left
