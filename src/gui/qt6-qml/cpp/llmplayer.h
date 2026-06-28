@@ -23,8 +23,9 @@ class QNetworkAccessManager;
 // action. On any failure (network error, timeout, garbled output) it falls back
 // to a safe legal move (check if free, otherwise fold) so an eval run never hangs.
 //
-// Everything is configured via environment variables (convenient on a headless
-// Raspberry Pi):
+// Configured via environment variables, which may also be supplied from a .env
+// file (a real env var always overrides the file). The .env is looked up in this
+// order: $POKERTH_LLM_ENV (explicit path), ./.env (launch dir), ~/.pokerth_llm.env.
 //   POKERTH_LLM_ENABLE       "1" to turn the autopilot on (default off)
 //   POKERTH_LLM_ENDPOINT     full chat-completions URL of the LAN server, e.g.
 //                            http://192.168.1.50:11434/v1/chat/completions

@@ -68,3 +68,9 @@ preview/.preview_view_mode
 preview/.preview_view_mode_stop
 *.apk
 docker/android/my.keystore
+
+# LLM eval harness: local config (may contain API keys) and decision logs.
+# .env.example is intentionally tracked as a template.
+.env
+.pokerth_llm.env
+pokerth_llm_eval.jsonl

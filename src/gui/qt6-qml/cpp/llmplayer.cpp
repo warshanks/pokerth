@@ -15,35 +15,102 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QTextStream>
+#include <QHash>
 #include <QUrl>
 #include <QDebug>
+
+namespace {
+// Parse a minimal .env file: one KEY=VALUE per line, '#' comments and blank lines
+// ignored, an optional leading "export ", and optional surrounding single/double
+// quotes on the value. Returns key -> value.
+QHash<QString, QString> parseDotEnv(const QString &path)
+{
+	QHash<QString, QString> out;
+	QFile f(path);
+	if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+		return out;
+	QTextStream in(&f);
+	while (!in.atEnd()) {
+		QString line = in.readLine().trimmed();
+		if (line.isEmpty() || line.startsWith('#'))
+			continue;
+		if (line.startsWith(QLatin1String("export ")))
+			line = line.mid(7).trimmed();
+		const int eq = line.indexOf('=');
+		if (eq <= 0)
+			continue;
+		const QString key = line.left(eq).trimmed();
+		QString val = line.mid(eq + 1).trimmed();
+		if (val.size() >= 2 &&
+		    ((val.startsWith('"') && val.endsWith('"')) ||
+		     (val.startsWith('\'') && val.endsWith('\'')))) {
+			val = val.mid(1, val.size() - 2);
+		}
+		if (!key.isEmpty())
+			out.insert(key, val);
+	}
+	return out;
+}
+
+// Locate a .env: explicit POKERTH_LLM_ENV, else ./.env, else ~/.pokerth_llm.env.
+QString findDotEnv()
+{
+	const QByteArray explicitPath = qgetenv("POKERTH_LLM_ENV");
+	if (!explicitPath.isEmpty())
+		return QString::fromLocal8Bit(explicitPath);
+	if (QFileInfo::exists(QStringLiteral(".env")))
+		return QStringLiteral(".env");
+	const QString homeFile = QDir::home().filePath(QStringLiteral(".pokerth_llm.env"));
+	if (QFileInfo::exists(homeFile))
+		return homeFile;
+	return QString();
+}
+} // namespace
 
 LlmPlayer::LlmPlayer(QObject *parent)
 	: QObject(parent)
 {
 	const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+	const QString dotenvPath = findDotEnv();
+	const QHash<QString, QString> dotenv =
+	    dotenvPath.isEmpty() ? QHash<QString, QString>() : parseDotEnv(dotenvPath);
 
-	m_endpoint = env.value("POKERTH_LLM_ENDPOINT").trimmed();
-	m_model    = env.value("POKERTH_LLM_MODEL", "gpt-3.5-turbo").trimmed();
-	m_apiKey   = env.value("POKERTH_LLM_API_KEY").trimmed();
+	// Resolve a setting: a real environment variable always wins; otherwise fall
+	// back to the .env file, then the built-in default.
+	auto cfg = [&](const char *key, const QString &def = QString()) -> QString {
+		if (env.contains(QString::fromLatin1(key)))
+			return env.value(QString::fromLatin1(key)).trimmed();
+		if (dotenv.contains(QString::fromLatin1(key)))
+			return dotenv.value(QString::fromLatin1(key)).trimmed();
+		return def;
+	};
 
-	const QString enableFlag = env.value("POKERTH_LLM_ENABLE", "0").trimmed();
+	m_endpoint = cfg("POKERTH_LLM_ENDPOINT");
+	m_model    = cfg("POKERTH_LLM_MODEL", "gpt-3.5-turbo");
+	m_apiKey   = cfg("POKERTH_LLM_API_KEY");
+
+	const QString enableFlag = cfg("POKERTH_LLM_ENABLE", "0");
 	const bool wantEnabled = (enableFlag == "1" || enableFlag.compare("true", Qt::CaseInsensitive) == 0);
 	m_enabled = wantEnabled && !m_endpoint.isEmpty();
 
 	bool ok = false;
-	const double temp = env.value("POKERTH_LLM_TEMPERATURE").toDouble(&ok);
+	const double temp = cfg("POKERTH_LLM_TEMPERATURE").toDouble(&ok);
 	if (ok) m_temperature = temp;
-	const int tmo = env.value("POKERTH_LLM_TIMEOUT_MS").toInt(&ok);
+	const int tmo = cfg("POKERTH_LLM_TIMEOUT_MS").toInt(&ok);
 	if (ok && tmo > 0) m_timeoutMs = tmo;
 
-	m_jsonMode = (env.value("POKERTH_LLM_JSON_MODE", "1").trimmed() != "0");
+	m_jsonMode = (cfg("POKERTH_LLM_JSON_MODE", "1") != "0");
 
-	m_logPath = env.value("POKERTH_LLM_LOG").trimmed();
+	m_logPath = cfg("POKERTH_LLM_LOG");
 	if (m_logPath.isEmpty())
 		m_logPath = QDir::home().filePath("pokerth_llm_eval.jsonl");
 
 	m_nam = new QNetworkAccessManager(this);
+
+	if (!dotenvPath.isEmpty())
+		qInfo() << "[LLM] loaded config from" << dotenvPath;
 
 	if (wantEnabled && m_endpoint.isEmpty())
 		qWarning() << "[LLM] POKERTH_LLM_ENABLE set but POKERTH_LLM_ENDPOINT is empty - autopilot disabled";

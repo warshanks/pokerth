@@ -49,6 +49,23 @@ delay reductions in `qmlguiinterface.cpp`.
 Autopilot only engages when `POKERTH_LLM_ENABLE=1` **and** an endpoint is set.
 With it off, the client behaves exactly as before.
 
+### Using a `.env` file
+
+Instead of `export`ing these each time, put them in a `.env` file. At startup the
+client loads the first of: `$POKERTH_LLM_ENV` (explicit path), `./.env` (the
+directory you launch it from), then `~/.pokerth_llm.env`. A real environment
+variable always overrides the file. Lines are `KEY=VALUE`; `#` comments, blank
+lines, a leading `export `, and surrounding quotes are all accepted.
+
+```bash
+cp .env.example .env      # then edit .env
+./pokerth_qml-client      # no exports needed
+```
+
+It logs `[LLM] loaded config from <path>` at startup so you can confirm which file
+was used. `.env` is gitignored (it may hold an API key); `.env.example` is the
+tracked template.
+
 ## Running
 
 Build the QML client (the autopilot lives only in `pokerth_qml-client`):
