@@ -17,6 +17,14 @@ the game and makes HTTP requests.
   click, `GameHandler` builds a JSON snapshot of the table (hole cards, board,
   pot, stacks, positions and the **exact legal action menu**) and hands it to
   `LlmPlayer::requestDecision()`.
+* The snapshot also carries **accumulated context** so decisions aren't stateless:
+  `hand_history` (the betting action this hand, by street), `recent_hands`
+  (compact summaries of the last 8 finished hands — final board, pot, winners,
+  shown cards — *including hands the hero folded*, so it can build reads), and
+  `opponent_stats` (per-opponent actions-seen / aggressive% / fold%). These are
+  fed from the engine's log callbacks, which fire for the whole hand even after
+  the hero is out of it. The model also explains each move via a `reasoning`
+  field, shown in the in-game action log and recorded in the JSONL.
 * `LlmPlayer` POSTs the snapshot to the chat‑completions endpoint
   (`QNetworkAccessManager`, asynchronous — the UI never freezes), parses the
   reply, **validates and clamps** it to a legal move, logs everything, and emits
@@ -113,8 +121,10 @@ python3 analyze_llm_eval.py ~/pokerth_llm_eval.jsonl
 
 * **Opponents are the built‑in bots** (a fixed, reproducible benchmark). Model‑vs‑
   model needs lifting the hardcoded "seat 0 is human" rule — a later phase.
-* **Per‑hand outcome logging** (chip delta per hand, tournament placement) isn't
-  written yet; the stack trajectory is a good proxy. Hooking
-  `GameHandler::onShowdown()` / `logPlayerWinsMsg()` would add exact results.
+* **Per‑decision outcome logging** (the chip result of *this* decision) isn't
+  written yet; the stack trajectory and the `recent_hands` results in each
+  observation are good proxies. A dedicated per-hand result record could be added.
+* **Recent-hand depth is a constant** (`kLlmMaxRecentHands = 8` in `gamehandler.h`).
+  Bump it there if you want a longer memory (at some token/latency cost).
 * **Windowed only.** Runs need a display (delays are shrunk, not removed). A
   headless `GuiInterface` for throughput sweeps is a later phase.
