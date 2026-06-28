@@ -718,15 +718,12 @@ void QmlGuiInterface::postRiverRunAnimation1()
     if (isNetwork) {
         return;
     }
-    QTimer::singleShot(evalDelayMs(5500), gh, [gh, sessionForTimer]() {
+    QTimer::singleShot(evalDelayMs(5500), gh, [gh]() {
         QMetaObject::invokeMethod(gh, "onNextRoundCleanGui", Qt::DirectConnection);
-        if (sessionForTimer) {
-            auto game = sessionForTimer->getCurrentGame();
-            if (game) {
-                game->initHand();
-                game->startHand();
-            }
-        }
+        // Start the next hand, or end the game if the tournament is won. Doing the
+        // game-over check here (instead of an unconditional initHand/startHand)
+        // prevents the crash when a local game is played to completion.
+        QMetaObject::invokeMethod(gh, "startNextHandOrEndGame", Qt::DirectConnection);
     });
 }
 

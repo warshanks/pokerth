@@ -140,6 +140,10 @@ public:
     Q_INVOKABLE void onNextPlayerBeRo();
     Q_INVOKABLE void onSwitchRounds();
     Q_INVOKABLE void onPostRiverRunBeRo();
+    // Start the next hand, OR end the local game if only one player has chips
+    // left. The QML client otherwise unconditionally starts a new hand, which
+    // crashes when the tournament is already won (initHand with a single player).
+    Q_INVOKABLE void startNextHandOrEndGame();
     Q_INVOKABLE void onShowdown();
     Q_INVOKABLE void onFlipHolecardsAllIn();
 

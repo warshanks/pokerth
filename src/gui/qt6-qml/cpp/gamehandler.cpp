@@ -1795,6 +1795,42 @@ void GameHandler::onPostRiverRunBeRo()
         hand->getCurrentBeRo()->postRiverRun();
 }
 
+void GameHandler::startNextHandOrEndGame()
+{
+    if (!m_session || m_localGameExitRequested) return;
+    if (m_session->isNetworkClientRunning()) return;
+    auto game = m_session->getCurrentGame();
+    if (!game) return;
+
+    // Count players who still hold chips. When only one remains the tournament is
+    // over: announce the winner and STOP — do NOT start another hand. Starting a
+    // hand with a single player crashes the engine (initHand). This mirrors the
+    // Qt-widgets client's post-river game-over guard (gametableimpl.cpp ~3100),
+    // which the QML client was missing entirely.
+    int withCash = 0;
+    boost::shared_ptr<PlayerInterface> winner;
+    PlayerList active = game->getActivePlayerList();
+    for (auto it = active->begin(); it != active->end(); ++it) {
+        if ((*it)->getMyCash() > 0) {
+            ++withCash;
+            winner = *it;
+        }
+    }
+
+    if (withCash <= 1) {
+        auto hand = game->getCurrentHand();
+        if (winner && hand && hand->getGuiInterface())
+            hand->getGuiInterface()->logPlayerWinGame(winner->getMyName(), game->getMyGameID());
+        qInfo() << "[LLM] game over —"
+                << (winner ? QString::fromStdString(winner->getMyName()) : QStringLiteral("?"))
+                << "wins the tournament; not starting another hand.";
+        return;
+    }
+
+    game->initHand();
+    game->startHand();
+}
+
 void GameHandler::onShowdown()
 {
     if (localGameCallbacksBlocked()) return;
