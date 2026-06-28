@@ -292,6 +292,9 @@ QString LlmPlayer::buildSystemPrompt() const
 		"to call. For a bet or raise, \"amount\" is the TOTAL additional chips you "
 		"put in this turn (it must be between \"min_raise\" and \"max_raise\", where "
 		"\"max_raise\" means all-in).\n\n"
+		"You may also be given the betting action so far this hand, summaries of "
+		"recent finished hands (including ones you folded), and per-opponent "
+		"tendencies. Use them to read opponents and inform your decision.\n\n"
 		"Respond with ONLY a single JSON object, no prose, no markdown, in exactly "
 		"this form:\n"
 		"{\"action\": \"<fold|check|call|bet|raise|allin>\", \"amount\": <int>, "
@@ -345,14 +348,87 @@ QString LlmPlayer::buildUserPrompt(const QJsonObject &obs) const
 			lines << opp.join('\n');
 		}
 	}
+
+	// Betting history of the current hand.
+	{
+		const QJsonArray hist = obs.value("hand_history").toArray();
+		if (!hist.isEmpty()) {
+			lines << QStringLiteral("Action this hand:");
+			QString curStreet;
+			for (const auto &av : hist) {
+				const QJsonObject a = av.toObject();
+				const QString street = a.value("street").toString();
+				if (street != curStreet) {
+					lines << QStringLiteral("  [%1]").arg(street);
+					curStreet = street;
+				}
+				QString l = QStringLiteral("    %1 %2").arg(a.value("name").toString(),
+				                                            a.value("action").toString());
+				if (a.contains("amount"))
+					l += QStringLiteral(" %1").arg(a.value("amount").toInt());
+				lines << l;
+			}
+		}
+	}
+
+	// Recent finished hands (incl. ones you folded), so you can read opponents.
+	{
+		const QJsonArray recent = obs.value("recent_hands").toArray();
+		if (!recent.isEmpty()) {
+			lines << QStringLiteral("Recent hands:");
+			for (const auto &hv : recent) {
+				const QJsonObject h = hv.toObject();
+				const QString board = joinCards(h.value("board").toArray());
+				QStringList winners;
+				for (const auto &w : h.value("winners").toArray()) winners << w.toString();
+				QStringList shown;
+				for (const auto &sv : h.value("shown").toArray()) {
+					const QJsonObject s = sv.toObject();
+					shown << QStringLiteral("%1 %2").arg(s.value("name").toString(),
+					                                     joinCards(s.value("cards").toArray()));
+				}
+				QString l = QStringLiteral("  #%1 board[%2] pot %3 won by %4")
+				            .arg(h.value("hand_id").toInt())
+				            .arg(board.isEmpty() ? QStringLiteral("preflop") : board)
+				            .arg(h.value("pot").toInt())
+				            .arg(winners.isEmpty() ? QStringLiteral("?") : winners.join(", "));
+				if (!shown.isEmpty())
+					l += QStringLiteral("; showdown: ") + shown.join(", ");
+				lines << l;
+			}
+		}
+	}
+
+	// Opponent tendencies distilled from observed actions.
+	{
+		const QJsonArray stats = obs.value("opponent_stats").toArray();
+		if (!stats.isEmpty()) {
+			lines << QStringLiteral("Opponent reads (from observed actions):");
+			for (const auto &sv : stats) {
+				const QJsonObject s = sv.toObject();
+				lines << QStringLiteral("  %1: %2 actions seen, %3% aggressive, %4% fold")
+				         .arg(s.value("name").toString())
+				         .arg(s.value("actions_seen").toInt())
+				         .arg(s.value("aggressive_pct").toInt())
+				         .arg(s.value("fold_pct").toInt());
+			}
+		}
+	}
+
 	{
 		QStringList legal;
 		for (const auto &c : obs.value("legal_actions").toArray()) legal << c.toString();
 		lines << QStringLiteral("Legal actions: %1").arg(legal.join(", "));
 	}
 	lines << QString();
-	lines << QStringLiteral("Full state JSON:");
-	lines << QString::fromUtf8(QJsonDocument(obs).toJson(QJsonDocument::Compact));
+	// Dump the core state as JSON as a "nothing lost" backup, but drop the verbose
+	// context arrays already rendered above (kept readable-only to save tokens).
+	QJsonObject core = obs;
+	core.remove(QStringLiteral("hand_history"));
+	core.remove(QStringLiteral("recent_hands"));
+	core.remove(QStringLiteral("opponent_stats"));
+	lines << QStringLiteral("Core state JSON:");
+	lines << QString::fromUtf8(QJsonDocument(core).toJson(QJsonDocument::Compact));
 	lines << QString();
 	lines << QStringLiteral("Respond with only the JSON decision object.");
 	return lines.join('\n');

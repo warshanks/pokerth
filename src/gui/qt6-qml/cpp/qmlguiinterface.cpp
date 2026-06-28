@@ -435,6 +435,12 @@ void QmlGuiInterface::logPlayerActionMsg(std::string playName, int action, int s
         QMetaObject::invokeMethod(m_gameHandler, "onRefreshAction", Qt::QueuedConnection,
                                   Q_ARG(int, 0), Q_ARG(int, action));
 
+        // LLM eval harness: record this action into the betting history / opponent
+        // tendencies (fires for every player, so the hero "sees" hands it folded).
+        QMetaObject::invokeMethod(m_gameHandler, "onLlmRecordAction", Qt::QueuedConnection,
+                                  Q_ARG(QString, QString::fromStdString(playName)),
+                                  Q_ARG(int, action), Q_ARG(int, setValue));
+
         // Spielverlauf-Text (analog guiLog::logPlayerActionMsg).
         const QString name = QString::fromStdString(playName);
         QString msg = name;
@@ -476,6 +482,9 @@ void QmlGuiInterface::logNewGameHandMsg(int gameID, int handID)
                             + QStringLiteral(" | Hand: ") + QString::number(handID) + QStringLiteral(" ##");
         QMetaObject::invokeMethod(m_gameHandler, "appendGameLog", Qt::QueuedConnection,
                                   Q_ARG(QString, msg), Q_ARG(int, GameHandler::LogHeader));
+        // LLM eval harness: finalize the previous hand and start a fresh one.
+        QMetaObject::invokeMethod(m_gameHandler, "onLlmHandStart", Qt::QueuedConnection,
+                                  Q_ARG(int, handID));
     }
 }
 
@@ -488,6 +497,10 @@ void QmlGuiInterface::logPlayerWinsMsg(std::string playerName, int pot, bool mai
         QMetaObject::invokeMethod(m_gameHandler, "appendGameLog", Qt::QueuedConnection,
                                   Q_ARG(QString, msg),
                                   Q_ARG(int, main ? GameHandler::LogWinnerMain : GameHandler::LogWinnerSide));
+        // LLM eval harness: record the hand result (winner + pot + final board).
+        QMetaObject::invokeMethod(m_gameHandler, "onLlmHandWinner", Qt::QueuedConnection,
+                                  Q_ARG(QString, QString::fromStdString(playerName)),
+                                  Q_ARG(int, pot), Q_ARG(bool, main));
     }
 }
 
@@ -547,6 +560,10 @@ void QmlGuiInterface::logFlipHoleCardsMsg(std::string playerName, int card1, int
         }
         QMetaObject::invokeMethod(m_gameHandler, "appendGameLog", Qt::QueuedConnection,
                                   Q_ARG(QString, msg), Q_ARG(int, GameHandler::LogNormal));
+        // LLM eval harness: record the revealed hole cards for the hand summary.
+        QMetaObject::invokeMethod(m_gameHandler, "onLlmShowCards", Qt::QueuedConnection,
+                                  Q_ARG(QString, QString::fromStdString(playerName)),
+                                  Q_ARG(int, card1), Q_ARG(int, card2));
     }
 }
 

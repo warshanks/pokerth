@@ -80,6 +80,12 @@ QString actionName(int action)
     }
 }
 
+QString roundName(int round)
+{
+    static const char *names[] = {"preflop", "flop", "turn", "river", "post_river"};
+    return (round >= 0 && round <= 4) ? QString::fromLatin1(names[round]) : QStringLiteral("unknown");
+}
+
 // Spielverlauf-Zeile als HTML einfärben – Farben/Stil 1:1 wie der Qt-Widgets-
 // Client (Default-Tischstil): normal #F0F0F0, Gewinner Hauptpot #FFFF00, Side-Pot
 // #FFFFCC, Sit-out/Board #FF6633.
@@ -1397,11 +1403,10 @@ QJsonObject GameHandler::buildLlmObservation()
     // Make sure to_call / min / max reflect the current engine state.
     computeCallAndRaiseAmounts();
 
-    static const char *roundNames[] = {"preflop", "flop", "turn", "river", "post_river"};
     const int round = static_cast<int>(hand->getCurrentRound());
 
     obs["hand_id"]     = hand->getMyID();
-    obs["round"]       = (round >= 0 && round <= 4) ? QString::fromLatin1(roundNames[round]) : QStringLiteral("unknown");
+    obs["round"]       = roundName(round);
     obs["small_blind"] = hand->getSmallBlind();
     obs["big_blind"]   = hand->getSmallBlind() * 2;
     obs["pot"]         = board->getPot() + board->getSets();
@@ -1460,7 +1465,155 @@ QJsonObject GameHandler::buildLlmObservation()
     }
     obs["players"] = players;
 
+    // Context layer 1: the betting action of the CURRENT hand so far.
+    if (!m_llmHandActions.isEmpty())
+        obs["hand_history"] = m_llmHandActions;
+
+    // Context layer 2: compact summaries of recent finished hands (incl. ones the
+    // hero folded), so the model can review how they played out.
+    if (!m_llmRecentHands.isEmpty()) {
+        QJsonArray recent;
+        for (const QJsonObject &h : m_llmRecentHands)
+            recent.append(h);
+        obs["recent_hands"] = recent;
+    }
+
+    // Context layer 3: per-opponent tendencies distilled from observed actions.
+    const QString heroName = QString::fromStdString(hero->getMyName());
+    QJsonArray oppStats;
+    for (auto it = m_llmOppStats.constBegin(); it != m_llmOppStats.constEnd(); ++it) {
+        if (it.key() == heroName) continue;
+        const OppStat &s = it.value();
+        const int n = s.folds + s.checks + s.calls + s.bets + s.raises + s.allins;
+        if (n == 0) continue;
+        QJsonObject o;
+        o["name"]            = it.key();
+        o["actions_seen"]    = n;
+        o["aggressive_pct"]  = (100 * (s.bets + s.raises + s.allins)) / n;
+        o["fold_pct"]        = (100 * s.folds) / n;
+        oppStats.append(o);
+    }
+    if (!oppStats.isEmpty())
+        obs["opponent_stats"] = oppStats;
+
     return obs;
+}
+
+QString GameHandler::llmHeroName() const
+{
+    if (!m_game) return QString();
+    auto hand = m_game->getCurrentHand();
+    if (!hand) return QString();
+    auto seats = hand->getSeatsList();
+    if (!seats || seats->empty()) return QString();
+    return QString::fromStdString(seats->front()->getMyName());
+}
+
+void GameHandler::resetLlmContext()
+{
+    m_llmOppStats.clear();
+    m_llmHandActions = QJsonArray();
+    m_llmHandShown = QJsonArray();
+    m_llmHandFinalBoard = QJsonArray();
+    m_llmHandWinners.clear();
+    m_llmHandPot = 0;
+    m_llmCurrentHandId = -1;
+    m_llmRecentHands.clear();
+}
+
+void GameHandler::onLlmRecordAction(const QString &name, int action, int amount)
+{
+    if (!m_llm || !m_llm->enabled()) return;
+    // The hero (seat 0) is recorded in onLlmDecision; logPlayerActionMsg here is for
+    // the computer opponents. Skipping the hero also avoids any double-counting.
+    if (name == llmHeroName()) return;
+
+    int round = -1;
+    if (m_game) {
+        auto h = m_game->getCurrentHand();
+        if (h) round = static_cast<int>(h->getCurrentRound());
+    }
+
+    QJsonObject a;
+    a["street"] = roundName(round);
+    a["name"]   = name;
+    a["action"] = actionName(action);
+    if (amount > 0 && (action == PLAYER_ACTION_CALL || action == PLAYER_ACTION_BET
+                       || action == PLAYER_ACTION_RAISE || action == PLAYER_ACTION_ALLIN))
+        a["amount"] = amount;
+    m_llmHandActions.append(a);
+
+    OppStat &s = m_llmOppStats[name];
+    switch (action) {
+    case PLAYER_ACTION_FOLD:  s.folds++;  break;
+    case PLAYER_ACTION_CHECK: s.checks++; break;
+    case PLAYER_ACTION_CALL:  s.calls++;  break;
+    case PLAYER_ACTION_BET:   s.bets++;   break;
+    case PLAYER_ACTION_RAISE: s.raises++; break;
+    case PLAYER_ACTION_ALLIN: s.allins++; break;
+    default: break;
+    }
+}
+
+void GameHandler::onLlmHandStart(int handId)
+{
+    if (!m_llm || !m_llm->enabled()) return;
+
+    // Finalize the just-completed hand into the recent-hands ring buffer.
+    if (m_llmCurrentHandId >= 0 && (!m_llmHandActions.isEmpty() || !m_llmHandWinners.isEmpty())) {
+        QJsonObject rec;
+        rec["hand_id"] = m_llmCurrentHandId;
+        rec["board"]   = m_llmHandFinalBoard;
+        rec["pot"]     = m_llmHandPot;
+        rec["winners"] = QJsonArray::fromStringList(m_llmHandWinners);
+        rec["shown"]   = m_llmHandShown;
+        m_llmRecentHands.append(rec);
+        while (m_llmRecentHands.size() > kLlmMaxRecentHands)
+            m_llmRecentHands.removeFirst();
+    }
+
+    m_llmHandActions = QJsonArray();
+    m_llmHandShown = QJsonArray();
+    m_llmHandFinalBoard = QJsonArray();
+    m_llmHandWinners.clear();
+    m_llmHandPot = 0;
+    m_llmCurrentHandId = handId;
+}
+
+void GameHandler::onLlmHandWinner(const QString &name, int pot, bool mainPot)
+{
+    if (!m_llm || !m_llm->enabled()) return;
+    m_llmHandWinners << (name + QStringLiteral(" $") + QString::number(pot)
+                         + (mainPot ? QString() : QStringLiteral(" (side)")));
+    m_llmHandPot += pot;
+
+    // Capture the final community cards while the finished hand is still live.
+    if (m_game) {
+        auto hand = m_game->getCurrentHand();
+        if (hand) {
+            auto board = hand->getBoard();
+            if (board) {
+                int bc[5] = {-1, -1, -1, -1, -1};
+                board->getMyCards(bc);
+                QJsonArray arr;
+                for (int i = 0; i < 5; ++i)
+                    if (bc[i] >= 0) arr.append(cardToStr(bc[i]));
+                m_llmHandFinalBoard = arr;
+            }
+        }
+    }
+}
+
+void GameHandler::onLlmShowCards(const QString &name, int card1, int card2)
+{
+    if (!m_llm || !m_llm->enabled()) return;
+    QJsonObject o;
+    o["name"] = name;
+    QJsonArray cs;
+    if (card1 >= 0) cs.append(cardToStr(card1));
+    if (card2 >= 0) cs.append(cardToStr(card2));
+    o["cards"] = cs;
+    m_llmHandShown.append(o);
 }
 
 void GameHandler::onLlmDecision(const QString &action, int amount, const QString &reasoning)
@@ -1485,6 +1638,29 @@ void GameHandler::onLlmDecision(const QString &action, int amount, const QString
         thought += QStringLiteral(" — ") + reasoning;
     appendGameLog(thought, LogSitOut);
 
+    // Record the hero's move into the within-hand betting history (opponents are
+    // recorded via onLlmRecordAction).
+    {
+        int heroAmt = 0;
+        if (action == QLatin1String("bet") || action == QLatin1String("raise"))
+            heroAmt = amount;
+        else if (action == QLatin1String("call"))
+            heroAmt = m_callAmount;
+        else if (action == QLatin1String("allin"))
+            heroAmt = m_maxRaiseAmount;
+        int round = -1;
+        if (m_game) {
+            auto h = m_game->getCurrentHand();
+            if (h) round = static_cast<int>(h->getCurrentRound());
+        }
+        QJsonObject a;
+        a["street"] = roundName(round);
+        a["name"]   = llmHeroName();
+        a["action"] = action;
+        if (heroAmt > 0) a["amount"] = heroAmt;
+        m_llmHandActions.append(a);
+    }
+
     if (action == QLatin1String("fold")) {
         fold();
     } else if (action == QLatin1String("check") || action == QLatin1String("call")) {
@@ -1503,6 +1679,7 @@ void GameHandler::startLocalGame()
 {
     if (!m_session) return;
     m_localGameExitRequested = false;
+    resetLlmContext();
 
     GameData gameData;
     if (m_config) {

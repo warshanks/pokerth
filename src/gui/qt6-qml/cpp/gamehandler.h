@@ -11,6 +11,9 @@
 #include <QStringList>
 #include <QElapsedTimer>
 #include <QJsonObject>
+#include <QJsonArray>
+#include <QHash>
+#include <QList>
 #include <QSet>
 #include <boost/shared_ptr.hpp>
 
@@ -140,6 +143,15 @@ public:
     Q_INVOKABLE void onShowdown();
     Q_INVOKABLE void onFlipHolecardsAllIn();
 
+    // LLM eval harness: context accumulation. Fed from the QmlGuiInterface log*
+    // callbacks (which fire for the whole hand, even after the hero folds), so the
+    // model can be given the betting history, recent finished hands, and opponent
+    // tendencies. No-ops unless the autopilot is enabled.
+    Q_INVOKABLE void onLlmRecordAction(const QString &name, int action, int amount);
+    Q_INVOKABLE void onLlmHandStart(int handId);
+    Q_INVOKABLE void onLlmHandWinner(const QString &name, int pot, bool mainPot);
+    Q_INVOKABLE void onLlmShowCards(const QString &name, int card1, int card2);
+
     // Called from QML
     Q_INVOKABLE void fold();
     Q_INVOKABLE void call();
@@ -214,10 +226,15 @@ private:
     void doActionDone();
 
     // LLM eval harness: build a JSON snapshot of the table from the hero's (seat 0)
-    // perspective, including the legal action menu. Empty object if not ready.
+    // perspective, including the legal action menu and accumulated context. Empty
+    // object if not ready.
     QJsonObject buildLlmObservation();
     // True when the autonomous LLM should be driving the hero seat right now.
     bool llmAutopilotActive() const;
+    // Reset all accumulated LLM context (called when a new local game starts).
+    void resetLlmContext();
+    // Name of the hero (seat 0), used to exclude it from opponent stats.
+    QString llmHeroName() const;
 
     boost::shared_ptr<Session> m_session;
     boost::shared_ptr<Game> m_game;
@@ -226,6 +243,19 @@ private:
     // Guards against issuing a second request while one decision is in flight
     // (onMeInAction may fire more than once per turn).
     bool m_llmRequestInFlight = false;
+
+    // --- LLM context accumulation (only populated while autopilot is enabled) ---
+    // Per-opponent action tallies across the session, distilled into tendencies.
+    struct OppStat { int folds = 0, checks = 0, calls = 0, bets = 0, raises = 0, allins = 0; };
+    QHash<QString, OppStat> m_llmOppStats;
+    QJsonArray m_llmHandActions;          // betting actions of the CURRENT hand
+    QJsonArray m_llmHandShown;            // showdown reveals this hand: {name, cards[]}
+    QJsonArray m_llmHandFinalBoard;       // final community cards this hand
+    QStringList m_llmHandWinners;         // winner descriptions this hand
+    int m_llmHandPot = 0;                 // total chips awarded this hand
+    int m_llmCurrentHandId = -1;
+    QList<QJsonObject> m_llmRecentHands;  // finished-hand summaries (oldest first)
+    static constexpr int kLlmMaxRecentHands = 8;
     SoundEvents *m_soundEventHandler = nullptr;
     QTimer *m_timeoutBeepTimer = nullptr;
     // Ratenbegrenzung für AFK-Reset (ResetTimeoutMessage). Wie der Widgets-
