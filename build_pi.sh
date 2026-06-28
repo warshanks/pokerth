@@ -63,6 +63,7 @@ BUILD_DEPS=(
 # across releases, so these are installed best-effort (a missing one is skipped).
 RUNTIME_DEPS=(
   libqt6sql6-sqlite
+  libqt6svg6
   qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts
   qml6-module-qtquick-window qml6-module-qtquick-templates qml6-module-qtquick-shapes
   qml6-module-qtquick-dialogs qml6-module-qtmultimedia qml6-module-qtqml-workerscript
