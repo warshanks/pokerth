@@ -1144,9 +1144,13 @@ void GameHandler::refreshHeroHand()
                                   && hero->getMyAction() != PLAYER_ACTION_FOLD
                                   && hero->getMyActiveStatus();
                 if (live) {
-                    // Current made hand (engine updates cardsValueInt each street).
+                    // getMyCardsValueInt() is computed once at hand setup over the
+                    // FULL (pre-shuffled) board, so pre-river it is the final hand —
+                    // showing it early would leak future cards. Only name the made
+                    // hand once all five board cards are legitimately out (river+),
+                    // where that value equals the real current hand.
                     const int cvi = hero->getMyCardsValueInt();
-                    if (cvi > 0)
+                    if (cvi > 0 && static_cast<int>(hand->getCurrentRound()) >= GAME_STATE_RIVER)
                         name = QString::fromStdString(
                             CardsValue::determineHandName(cvi, m_game->getActivePlayerList()));
 
@@ -1491,10 +1495,17 @@ QJsonObject GameHandler::buildLlmObservation()
     obs["big_blind"]   = hand->getSmallBlind() * 2;
     obs["pot"]         = board->getPot() + board->getSets();
 
+    // IMPORTANT: board->getMyCards() returns all 5 pre-shuffled board cards from
+    // hand setup, including ones not yet dealt. Only expose the cards visible on
+    // the CURRENT street, or we would leak future community cards to the model.
+    int visibleBoard = 0;
+    if (round == GAME_STATE_FLOP) visibleBoard = 3;
+    else if (round == GAME_STATE_TURN) visibleBoard = 4;
+    else if (round >= GAME_STATE_RIVER) visibleBoard = 5;  // river + post-river
     int bc[5] = {-1, -1, -1, -1, -1};
     board->getMyCards(bc);
     QJsonArray boardArr;
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < visibleBoard; ++i)
         if (bc[i] >= 0) boardArr.append(cardToStr(bc[i]));
     obs["board"] = boardArr;
 
