@@ -54,7 +54,7 @@ BUILD_DEPS=(
   libboost-filesystem-dev libboost-program-options-dev
   libboost-system-dev libboost-date-time-dev
   qt6-base-dev qt6-declarative-dev qt6-websockets-dev qt6-multimedia-dev
-  qt6-shadertools-dev qt6-tools-dev libqt6opengl6-dev
+  qt6-shadertools-dev qt6-tools-dev libqt6opengl6-dev libqt6svg6-dev
   libgl-dev libegl-dev libx11-dev libxkbcommon-dev
   libfontconfig-dev libfreetype-dev libpulse-dev
 )
