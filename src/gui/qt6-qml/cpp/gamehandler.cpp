@@ -1736,7 +1736,6 @@ void GameHandler::onLlmDecision(const QString &action, int amount, const QString
 
 void GameHandler::onContextUsage(int promptTokens, int completionTokens, int totalTokens, int contextSize)
 {
-    Q_UNUSED(completionTokens)
     Q_UNUSED(totalTokens)
     if (promptTokens <= 0) return;
 
@@ -1749,6 +1748,10 @@ void GameHandler::onContextUsage(int promptTokens, int completionTokens, int tot
     } else {
         txt = QStringLiteral("ctx %1 tok").arg(loc.toString(promptTokens));
     }
+    // Generated (reasoning+answer) tokens this turn — the OUTPUT, distinct from the
+    // prompt/context above. Helps tell "input context" from "thinking it produced".
+    if (completionTokens > 0)
+        txt += QStringLiteral("  ·  out %1").arg(loc.toString(completionTokens));
     if (txt != m_contextUsageText) {
         m_contextUsageText = txt;
         emit contextUsageChanged();
