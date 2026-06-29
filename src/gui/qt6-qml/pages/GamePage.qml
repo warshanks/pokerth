@@ -52,6 +52,16 @@ Rectangle {
             tableZone.showChat = false
     }
 
+    function toggleThinkingOverlay() {
+        if (!tableZone)
+            return
+        tableZone.showThinking = !tableZone.showThinking
+        if (tableZone.showThinking) {
+            tableZone.showLog = false
+            tableZone.showChat = false
+        }
+    }
+
     function toggleChatOverlay() {
         if (!tableZone)
             return
@@ -1439,6 +1449,8 @@ Rectangle {
             // ── Spielverlauf (Log) + Chat – Umschalt-Icons + Overlays ──────────
             property bool showLog: false
             property bool showChat: false
+            // LLM-Reasoning-Panel (zeigt den letzten Chain-of-Thought des Modells)
+            property bool showThinking: false
             // Emoji-Reaktions-Picker (Panel unter dem Toggle neben dem Chat-Icon)
             property bool showReactions: false
 
@@ -1803,6 +1815,130 @@ Rectangle {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
                     onClicked: gamePage.toggleLogOverlay()
+                }
+            }
+
+            // ── "Model thinking" toggle (🧠) – left of the log icon ────────────
+            Rectangle {
+                id: thinkingToggle
+                z: 200
+                anchors.top: parent.top
+                anchors.right: logToggle.left
+                anchors.rightMargin: 6
+                anchors.topMargin: 8
+                width: 34; height: 34; radius: 17
+                color: tableZone.showThinking ? Config.Theme.colorAccent : Qt.rgba(0, 0, 0, 0.45)
+                Text {
+                    anchors.centerIn: parent
+                    text: "🧠"
+                    font.family: Config.StaticData.emojiFamily
+                    font.pixelSize: 16
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: gamePage.toggleThinkingOverlay()
+                }
+            }
+
+            // ── "Model thinking" overlay: the latest chain-of-thought, scrollable ─
+            Item {
+                id: thinkingOverlay
+                z: 150
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                anchors.right: parent.right
+                width: tableZone.wide ? Math.max(parent.width / 3, 320) : parent.width
+                visible: tableZone.showThinking
+
+                Rectangle {
+                    id: thinkingPanel
+                    anchors.fill: parent
+                    anchors.topMargin: 50
+                    anchors.bottomMargin: 10
+                    anchors.leftMargin: tableZone.wide ? 10 : 8
+                    anchors.rightMargin: tableZone.wide ? 10 : 8
+                    radius: 16
+                    color: Config.Theme.withAlpha(Config.StaticData.palette.secondary.col700, 0.97)
+                    border.color: Config.StaticData.palette.secondary.col500
+                    border.width: 1
+                }
+                MouseArea { anchors.fill: thinkingPanel }
+
+                ColumnLayout {
+                    anchors.fill: thinkingPanel
+                    anchors.margins: 12
+                    spacing: 8
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Text {
+                            Layout.fillWidth: true
+                            text: qsTr("Model thinking")
+                            color: Config.Theme.colorAccent
+                            font.family: Config.StaticData.loadedFont.font.family
+                            font.pixelSize: 15
+                            font.bold: true
+                            font.letterSpacing: 0.4
+                        }
+                        Rectangle {
+                            Layout.preferredWidth: 26
+                            Layout.preferredHeight: 26
+                            radius: 13
+                            color: thinkCloseArea.containsMouse
+                                   ? Config.Theme.withAlpha(Config.StaticData.palette.secondary.col500, 0.7)
+                                   : "transparent"
+                            VectorImage {
+                                anchors.centerIn: parent
+                                width: 14; height: 14
+                                source: "../resources/close.svg"
+                                layer.enabled: true
+                                layer.effect: MultiEffect {
+                                    colorization: 1.0
+                                    colorizationColor: Config.StaticData.palette.secondary.col200
+                                }
+                            }
+                            MouseArea {
+                                id: thinkCloseArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: gamePage.toggleThinkingOverlay()
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 1
+                        color: Config.Theme.withAlpha(Config.StaticData.palette.secondary.col500, 0.5)
+                    }
+
+                    Flickable {
+                        id: thinkFlick
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        contentWidth: width
+                        contentHeight: thinkText.implicitHeight
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                        Text {
+                            id: thinkText
+                            width: thinkFlick.width
+                            text: (typeof GameTable !== "undefined" && GameTable && GameTable.latestThinking.length > 0)
+                                  ? GameTable.latestThinking
+                                  : qsTr("(waiting for the model's next decision…)")
+                            // Show the start of the newest reasoning when it updates.
+                            onTextChanged: thinkFlick.contentY = 0
+                            wrapMode: Text.WordWrap
+                            color: Config.StaticData.palette.secondary.col100
+                            font.family: Config.StaticData.loadedFont.font.family
+                            font.pixelSize: 12
+                            lineHeight: 1.2
+                        }
+                    }
                 }
             }
 

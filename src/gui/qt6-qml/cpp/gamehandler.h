@@ -64,6 +64,8 @@ class GameHandler : public QObject
     Q_PROPERTY(QVariantList heroHandChances READ heroHandChances NOTIFY heroHandChanged)
     // LLM context-length readout, e.g. "ctx 1,234 / 131,072 (1%)".
     Q_PROPERTY(QString contextUsageText READ contextUsageText NOTIFY contextUsageChanged)
+    // The model's full chain-of-thought for its latest decision (for a debug panel).
+    Q_PROPERTY(QString latestThinking READ latestThinking NOTIFY latestThinkingChanged)
 
 public:
     explicit GameHandler(QObject *parent = nullptr);
@@ -102,6 +104,7 @@ public:
     QString heroHandName() const { return m_heroHandName; }
     QVariantList heroHandChances() const { return m_heroHandChances; }
     QString contextUsageText() const { return m_contextUsageText; }
+    QString latestThinking() const { return m_latestThinking; }
 
     // Zeilentyp für die Einfärbung des Spielverlaufs – Farben/Stil 1:1 wie der
     // Qt-Widgets-Client (Default-Tischstil).
@@ -180,6 +183,8 @@ private slots:
     void onLlmDecision(const QString &action, int amount, const QString &reasoning);
     // Update the context-length readout from the latest request's token usage.
     void onContextUsage(int promptTokens, int completionTokens, int totalTokens, int contextSize);
+    // Store the model's latest chain-of-thought for the thinking panel.
+    void onThinking(const QString &reasoningContent);
 
 signals:
     void playersChanged();
@@ -213,6 +218,7 @@ signals:
     void canShowCardsChanged();
     void heroHandChanged();
     void contextUsageChanged();
+    void latestThinkingChanged();
     // Emoji-Reaktion empfangen (Chat-Konvention "/emoji 🎉" des Web-Clients) –
     // wird nicht im Chat angezeigt, sondern als Animation am Sitz abgespielt.
     void reactionReceived(const QString &playerName, const QString &emoji);
@@ -311,6 +317,7 @@ private:
     QString m_heroHandName;
     QVariantList m_heroHandChances;
     QString m_contextUsageText;
+    QString m_latestThinking;
     // Showdown aktiv: erst dann dürfen Gegnerkarten aufgedeckt werden. Verhindert,
     // dass die (noch veraltete) playerNeedToShowCards-Liste während der River-
     // Setzrunde der nächsten Hand fälschlich Karten aufdeckt.

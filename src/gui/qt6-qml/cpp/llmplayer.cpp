@@ -350,6 +350,7 @@ void LlmPlayer::onReplyFinished()
 	        << "peak=" << m_peakPromptTokens;
 	emit decisionReady(action, amount, reasoning);
 	emit contextUsage(promptTokens, completionTokens, totalTokens, m_contextSize);
+	emit thinkingReady(reasoningContent);
 }
 
 void LlmPlayer::decideFromText(const QJsonObject &obs, const QString &content,

@@ -210,6 +210,7 @@ GameHandler::GameHandler(QObject *parent)
     m_llm = new LlmPlayer(this);
     connect(m_llm, &LlmPlayer::decisionReady, this, &GameHandler::onLlmDecision);
     connect(m_llm, &LlmPlayer::contextUsage, this, &GameHandler::onContextUsage);
+    connect(m_llm, &LlmPlayer::thinkingReady, this, &GameHandler::onThinking);
 
     // Per-session finished-hand memory depth (POKERTH_LLM_HISTORY_HANDS).
     const int hh = qEnvironmentVariableIntValue("POKERTH_LLM_HISTORY_HANDS");
@@ -1757,6 +1758,13 @@ void GameHandler::onContextUsage(int promptTokens, int completionTokens, int tot
         m_contextUsageText = txt;
         emit contextUsageChanged();
     }
+}
+
+void GameHandler::onThinking(const QString &reasoningContent)
+{
+    if (reasoningContent == m_latestThinking) return;
+    m_latestThinking = reasoningContent;
+    emit latestThinkingChanged();
 }
 
 void GameHandler::applyLlmAction(const QString &action, int amount)

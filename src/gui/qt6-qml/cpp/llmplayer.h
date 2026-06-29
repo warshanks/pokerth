@@ -73,6 +73,10 @@ signals:
 	// contextSize is the loaded window (0 if unknown).
 	void contextUsage(int promptTokens, int completionTokens, int totalTokens, int contextSize);
 
+	// The model's full chain-of-thought for the latest decision (may be empty if
+	// the server doesn't return reasoning_content), for display.
+	void thinkingReady(const QString &reasoningContent);
+
 private slots:
 	void onReplyFinished();
 	void onPropsFinished();
