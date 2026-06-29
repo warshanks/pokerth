@@ -9,6 +9,7 @@
 #include <QObject>
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 
 class QNetworkAccessManager;
 
@@ -53,6 +54,9 @@ public:
 	// expected to serialise calls (one decision in flight at a time).
 	void requestDecision(const QJsonObject &observation);
 
+	// Clear the replayed reasoning conversation (call when a new game starts).
+	void resetConversation();
+
 signals:
 	// A legal, ready-to-apply decision. action is one of:
 	//   "fold", "check", "call", "bet", "raise", "allin".
@@ -74,6 +78,8 @@ private:
 	void fetchContextSize();
 	QString buildSystemPrompt() const;
 	QString buildUserPrompt(const QJsonObject &obs) const;
+	// Compact one-line situation recap used as the user turn in replayed history.
+	QString compactRecap(const QJsonObject &obs) const;
 	// Parse the model's reply text and map+clamp it against the legal options in
 	// obs. Fills outAction/outAmount with a legal move; sets status to "ok" or a
 	// short diagnostic ("raise_clamped_max", "unknown_action:foo", ...).
@@ -111,6 +117,13 @@ private:
 	int m_contextSize = 0;        // loaded n_ctx (tokens), 0 = unknown
 	int m_lastPromptTokens = 0;
 	int m_peakPromptTokens = 0;
+
+	// Reasoning hydration: replay the last N turns as a conversation so the model
+	// sees its own prior chain-of-thought. 0 = off (POKERTH_LLM_REASONING_TURNS).
+	int m_reasoningTurns = 0;
+	QString m_pendingRecap;       // recap of the in-flight turn (stored on reply)
+	QStringList m_priorRecaps;    // user-side recap per remembered turn
+	QStringList m_priorAssistant; // assistant reply (reasoning + answer) per turn
 };
 
 #endif // LLMPLAYER_H

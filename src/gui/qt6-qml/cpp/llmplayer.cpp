@@ -104,6 +104,8 @@ LlmPlayer::LlmPlayer(QObject *parent)
 	if (ok && mt > 0) m_maxTokens = mt;
 	const int ctx = cfg("POKERTH_LLM_CONTEXT").toInt(&ok);
 	if (ok && ctx > 0) m_contextSize = ctx;
+	const int rt = cfg("POKERTH_LLM_REASONING_TURNS").toInt(&ok);
+	if (ok && rt >= 0) m_reasoningTurns = rt;
 
 	m_jsonMode = (cfg("POKERTH_LLM_JSON_MODE", "1") != "0");
 
@@ -120,7 +122,8 @@ LlmPlayer::LlmPlayer(QObject *parent)
 		qWarning() << "[LLM] POKERTH_LLM_ENABLE set but POKERTH_LLM_ENDPOINT is empty - autopilot disabled";
 	if (m_enabled)
 		qInfo() << "[LLM] autopilot ENABLED endpoint=" << m_endpoint
-		        << "model=" << m_model << "log=" << m_logPath;
+		        << "model=" << m_model << "log=" << m_logPath
+		        << "reasoning_hydration_turns=" << m_reasoningTurns;
 
 	// Learn the loaded context window from the server (unless set explicitly).
 	if (m_enabled && m_contextSize == 0)
@@ -176,10 +179,20 @@ void LlmPlayer::onPropsFinished()
 void LlmPlayer::requestDecision(const QJsonObject &observation)
 {
 	m_pendingObs = observation;
+	m_pendingRecap = compactRecap(observation);
 	m_requestStartMs = QDateTime::currentMSecsSinceEpoch();
 
 	QJsonArray messages;
 	messages.append(QJsonObject{{"role", "system"}, {"content", buildSystemPrompt()}});
+
+	// Reasoning hydration: replay recent turns as a real conversation so the model
+	// sees its own prior chain-of-thought (its reasoning is carried in the assistant
+	// content). Disabled when POKERTH_LLM_REASONING_TURNS == 0.
+	for (int i = 0; i < m_priorRecaps.size(); ++i) {
+		messages.append(QJsonObject{{"role", "user"},      {"content", m_priorRecaps[i]}});
+		messages.append(QJsonObject{{"role", "assistant"}, {"content", m_priorAssistant[i]}});
+	}
+
 	messages.append(QJsonObject{{"role", "user"},   {"content", buildUserPrompt(observation)}});
 
 	QJsonObject body;
@@ -202,6 +215,26 @@ void LlmPlayer::requestDecision(const QJsonObject &observation)
 	connect(reply, &QNetworkReply::finished, this, &LlmPlayer::onReplyFinished);
 }
 
+void LlmPlayer::resetConversation()
+{
+	m_priorRecaps.clear();
+	m_priorAssistant.clear();
+}
+
+QString LlmPlayer::compactRecap(const QJsonObject &obs) const
+{
+	const QJsonObject hero = obs.value("hero").toObject();
+	QStringList hole, board;
+	for (const auto &c : hero.value("hole_cards").toArray()) hole << c.toString();
+	for (const auto &c : obs.value("board").toArray()) board << c.toString();
+	return QStringLiteral("[%1] hole %2 board %3 pot %4 to_call %5 — your move?")
+	       .arg(obs.value("round").toString(),
+	            hole.isEmpty() ? QStringLiteral("?") : hole.join(' '),
+	            board.isEmpty() ? QStringLiteral("-") : board.join(' '))
+	       .arg(obs.value("pot").toInt())
+	       .arg(obs.value("to_call").toInt());
+}
+
 void LlmPlayer::onReplyFinished()
 {
 	QNetworkReply *reply = qobject_cast<QNetworkReply *>(sender());
@@ -216,6 +249,7 @@ void LlmPlayer::onReplyFinished()
 	QString status;
 	QString content;
 	QString reasoning;
+	QString reasoningContent;   // full chain-of-thought (separate field), for hydration
 	QJsonObject usage;
 
 	if (reply->error() != QNetworkReply::NoError) {
@@ -230,16 +264,34 @@ void LlmPlayer::onReplyFinished()
 			fallback(m_pendingObs, action, amount);
 		} else {
 			usage = doc.object().value("usage").toObject();
-			content = doc.object()
-			          .value("choices").toArray().at(0).toObject()
-			          .value("message").toObject()
-			          .value("content").toString();
+			const QJsonObject msg = doc.object()
+			        .value("choices").toArray().at(0).toObject()
+			        .value("message").toObject();
+			content = msg.value("content").toString();
+			reasoningContent = msg.value("reasoning_content").toString();
 			if (content.trimmed().isEmpty()) {
 				status = QStringLiteral("empty_content");
 				fallback(m_pendingObs, action, amount);
 			} else {
 				decideFromText(m_pendingObs, content, action, amount, reasoning, status);
 			}
+		}
+	}
+
+	// Reasoning hydration: remember this turn so future requests can replay it as a
+	// conversation. The assistant message carries the chain-of-thought inline (in
+	// <think> tags) so it survives regardless of the server's history-stripping.
+	if (m_reasoningTurns > 0 && !content.trimmed().isEmpty()) {
+		QString assistantMsg;
+		if (!reasoningContent.trimmed().isEmpty())
+			assistantMsg = QStringLiteral("<think>\n%1\n</think>\n\n%2").arg(reasoningContent, content);
+		else
+			assistantMsg = content;
+		m_priorRecaps.append(m_pendingRecap);
+		m_priorAssistant.append(assistantMsg);
+		while (m_priorRecaps.size() > m_reasoningTurns) {
+			m_priorRecaps.removeFirst();
+			m_priorAssistant.removeFirst();
 		}
 	}
 
@@ -571,6 +623,7 @@ void LlmPlayer::logDecision(const QJsonObject &obs, const QString &rawContent,
 	// Token usage for context-length tracking (llama.cpp returns this).
 	if (!usage.isEmpty()) rec["usage"] = usage;
 	rec["context_size"] = m_contextSize;
+	rec["reasoning_turns"] = m_reasoningTurns;   // hydration depth, for A/B runs
 
 	QFile f(m_logPath);
 	if (f.open(QIODevice::Append | QIODevice::Text)) {

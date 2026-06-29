@@ -1610,6 +1610,7 @@ void GameHandler::resetLlmContext()
     m_llmHandPot = 0;
     m_llmCurrentHandId = -1;
     m_llmRecentHands.clear();
+    if (m_llm) m_llm->resetConversation();
 }
 
 void GameHandler::onLlmRecordAction(const QString &name, int action, int amount)
