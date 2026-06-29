@@ -54,6 +54,7 @@ delay reductions in `qmlguiinterface.cpp`.
 | `POKERTH_LLM_JSON_MODE` | `1` | Send `response_format: json_object`. Set `0` if your server rejects it. |
 | `POKERTH_LLM_MAX_TOKENS` | `8192` | Max output tokens per decision. Raise it if a reasoning model truncates before emitting JSON. |
 | `POKERTH_LLM_CONTEXT` | auto | Context window in tokens for the on-screen `%`. Auto-detected from llama.cpp `/props` (`n_ctx`); set to override or for non-llama servers. |
+| `POKERTH_LLM_HISTORY_HANDS` | `40` | How many finished hands of session memory to feed the model (each with its full betting narrative + outcome). Raise it to use more of the context window. |
 | `POKERTH_LLM_LOG` | `~/pokerth_llm_eval.jsonl` | JSONL decision log path. |
 
 Each decision's token usage (`usage.prompt_tokens/completion_tokens/total_tokens`,

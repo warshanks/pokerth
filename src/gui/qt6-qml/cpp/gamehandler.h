@@ -277,9 +277,9 @@ private:
     int m_llmHandPot = 0;                 // total chips awarded this hand
     int m_llmCurrentHandId = -1;
     QList<QJsonObject> m_llmRecentHands;  // finished-hand summaries (oldest first)
-    // Per-session memory of finished-hand outcomes the model learns from. Generous
-    // (the context window is large); one compact line each.
-    static constexpr int kLlmMaxRecentHands = 40;
+    // Per-session memory of finished hands the model learns from. Tunable via
+    // POKERTH_LLM_HISTORY_HANDS (the context window is large).
+    int m_llmMaxRecentHands = 40;
     SoundEvents *m_soundEventHandler = nullptr;
     QTimer *m_timeoutBeepTimer = nullptr;
     // Ratenbegrenzung für AFK-Reset (ResetTimeoutMessage). Wie der Widgets-

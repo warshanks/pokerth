@@ -485,6 +485,31 @@ QString LlmPlayer::buildUserPrompt(const QJsonObject &obs) const
 				if (!shown.isEmpty())
 					l += QStringLiteral("; showdown: ") + shown.join(", ");
 				lines << l;
+
+				// How the hand was played, by street (the betting narrative).
+				const QJsonArray acts = h.value("actions").toArray();
+				if (!acts.isEmpty()) {
+					QStringList segs, streetActs;
+					QString cur;
+					for (const auto &av : acts) {
+						const QJsonObject a = av.toObject();
+						const QString st = a.value("street").toString();
+						if (st != cur) {
+							if (!streetActs.isEmpty())
+								segs << QStringLiteral("%1: %2").arg(cur, streetActs.join(", "));
+							streetActs.clear();
+							cur = st;
+						}
+						QString s = QStringLiteral("%1 %2").arg(a.value("name").toString(),
+						                                        a.value("action").toString());
+						if (a.contains("amount")) s += QStringLiteral(" %1").arg(a.value("amount").toInt());
+						streetActs << s;
+					}
+					if (!streetActs.isEmpty())
+						segs << QStringLiteral("%1: %2").arg(cur, streetActs.join(", "));
+					if (!segs.isEmpty())
+						lines << QStringLiteral("      ") + segs.join(QStringLiteral(" | "));
+				}
 			}
 		}
 	}

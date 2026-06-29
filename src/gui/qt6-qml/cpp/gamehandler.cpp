@@ -210,6 +210,10 @@ GameHandler::GameHandler(QObject *parent)
     m_llm = new LlmPlayer(this);
     connect(m_llm, &LlmPlayer::decisionReady, this, &GameHandler::onLlmDecision);
     connect(m_llm, &LlmPlayer::contextUsage, this, &GameHandler::onContextUsage);
+
+    // Per-session finished-hand memory depth (POKERTH_LLM_HISTORY_HANDS).
+    const int hh = qEnvironmentVariableIntValue("POKERTH_LLM_HISTORY_HANDS");
+    if (hh > 0) m_llmMaxRecentHands = hh;
 }
 
 bool GameHandler::eventFilter(QObject *watched, QEvent *event)
@@ -1654,8 +1658,9 @@ void GameHandler::onLlmHandStart(int handId)
         rec["pot"]     = m_llmHandPot;
         rec["winners"] = QJsonArray::fromStringList(m_llmHandWinners);
         rec["shown"]   = m_llmHandShown;
+        rec["actions"] = m_llmHandActions;   // how the hand was played, for learning
         m_llmRecentHands.append(rec);
-        while (m_llmRecentHands.size() > kLlmMaxRecentHands)
+        while (m_llmRecentHands.size() > m_llmMaxRecentHands)
             m_llmRecentHands.removeFirst();
     }
 
