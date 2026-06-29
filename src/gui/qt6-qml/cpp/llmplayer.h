@@ -93,9 +93,9 @@ private:
 	QString m_apiKey;
 	double m_temperature = 0.7;
 	int m_timeoutMs = 30000;
-	// Output token budget. Decisions return short JSON; analysis is allowed to
-	// reason at length (uses the large context window). POKERTH_LLM_MAX_TOKENS.
-	int m_maxTokens = 1024;
+	// Output token budget. Generous by default so reasoning models have room to
+	// think AND still emit the JSON answer. POKERTH_LLM_MAX_TOKENS overrides.
+	int m_maxTokens = 8192;
 	// Send {"response_format":{"type":"json_object"}} (OpenAI/vLLM/llama.cpp). Set
 	// POKERTH_LLM_JSON_MODE=0 for servers that reject the field.
 	bool m_jsonMode = true;

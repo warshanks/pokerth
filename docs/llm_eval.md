@@ -52,7 +52,7 @@ delay reductions in `qmlguiinterface.cpp`.
 | `POKERTH_LLM_TEMPERATURE` | `0.7` | Sampling temperature. |
 | `POKERTH_LLM_TIMEOUT_MS` | `30000` | Per‑request transfer timeout. |
 | `POKERTH_LLM_JSON_MODE` | `1` | Send `response_format: json_object`. Set `0` if your server rejects it. |
-| `POKERTH_LLM_MAX_TOKENS` | `1024` | Max output tokens per decision. |
+| `POKERTH_LLM_MAX_TOKENS` | `8192` | Max output tokens per decision. Raise it if a reasoning model truncates before emitting JSON. |
 | `POKERTH_LLM_CONTEXT` | auto | Context window in tokens for the on-screen `%`. Auto-detected from llama.cpp `/props` (`n_ctx`); set to override or for non-llama servers. |
 | `POKERTH_LLM_LOG` | `~/pokerth_llm_eval.jsonl` | JSONL decision log path. |
 

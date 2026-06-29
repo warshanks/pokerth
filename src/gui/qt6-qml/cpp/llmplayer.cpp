@@ -264,14 +264,22 @@ void LlmPlayer::decideFromText(const QJsonObject &obs, const QString &content,
                                QString &outAction, int &outAmount, QString &outReasoning,
                                QString &status) const
 {
+	// Reasoning models emit a chain-of-thought block before the answer. Strip it
+	// (everything up to the last </think>) so its braces don't confuse the JSON
+	// extraction; the answer JSON follows. Harmless if no such block is present.
+	QString body = content;
+	const int thinkEnd = body.lastIndexOf(QStringLiteral("</think>"), -1, Qt::CaseInsensitive);
+	if (thinkEnd >= 0)
+		body = body.mid(thinkEnd + 8);
+
 	// Models occasionally wrap the JSON in markdown fences or prose; grab the
-	// outermost {...} block.
-	const int b = content.indexOf('{');
-	const int e = content.lastIndexOf('}');
+	// outermost {...} block of what remains.
+	const int b = body.indexOf('{');
+	const int e = body.lastIndexOf('}');
 	QJsonObject d;
 	if (b >= 0 && e > b) {
 		QJsonParseError pe;
-		const QJsonDocument doc = QJsonDocument::fromJson(content.mid(b, e - b + 1).toUtf8(), &pe);
+		const QJsonDocument doc = QJsonDocument::fromJson(body.mid(b, e - b + 1).toUtf8(), &pe);
 		if (pe.error == QJsonParseError::NoError && doc.isObject())
 			d = doc.object();
 	}

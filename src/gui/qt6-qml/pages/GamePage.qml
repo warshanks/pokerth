@@ -1605,23 +1605,31 @@ Rectangle {
                             }
                         }
                     }
+                }
+            }
 
-                    // LLM context-length readout (prompt tokens / context window).
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 1
-                        visible: ctxUsageText.visible
-                        color: Config.Theme.withAlpha(Config.StaticData.palette.secondary.col500, 0.5)
-                    }
-                    Text {
-                        id: ctxUsageText
-                        Layout.fillWidth: true
-                        visible: text.length > 0
-                        text: (typeof GameTable !== "undefined" && GameTable) ? GameTable.contextUsageText : ""
-                        color: Config.Theme.withAlpha(Config.StaticData.palette.secondary.col200, 0.85)
-                        font.family: Config.StaticData.loadedFont.font.family
-                        font.pixelSize: 10
-                    }
+            // ── LLM context-length readout (prompt tokens / context window) ────
+            Rectangle {
+                id: ctxUsageBadge
+                z: 200
+                visible: ctxUsageLabel.text.length > 0
+                anchors.left: parent.left
+                anchors.bottom: parent.bottom
+                anchors.leftMargin: 8
+                anchors.bottomMargin: 8
+                width: ctxUsageLabel.implicitWidth + 16
+                height: ctxUsageLabel.implicitHeight + 10
+                radius: 8
+                color: Config.Theme.withAlpha(Config.StaticData.palette.secondary.col700, 0.9)
+                border.color: Config.StaticData.palette.secondary.col500
+                border.width: 1
+                Text {
+                    id: ctxUsageLabel
+                    anchors.centerIn: parent
+                    text: (typeof GameTable !== "undefined" && GameTable) ? GameTable.contextUsageText : ""
+                    color: Config.Theme.colorAccent
+                    font.family: Config.StaticData.loadedFont.font.family
+                    font.pixelSize: 12
                 }
             }
 
