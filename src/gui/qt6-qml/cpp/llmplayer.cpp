@@ -103,7 +103,7 @@ LlmPlayer::LlmPlayer(QObject *parent)
 	const int mt = cfg("POKERTH_LLM_MAX_TOKENS").toInt(&ok);
 	if (ok && mt > 0) m_maxTokens = mt;
 	const int ctx = cfg("POKERTH_LLM_CONTEXT").toInt(&ok);
-	if (ok && ctx > 0) m_contextSize = ctx;
+	if (ok && ctx > 0) { m_contextSize = ctx; m_contextPinned = true; }
 	const int rt = cfg("POKERTH_LLM_REASONING_TURNS").toInt(&ok);
 	if (ok && rt >= 0) m_reasoningTurns = rt;
 
@@ -219,6 +219,14 @@ void LlmPlayer::resetConversation()
 {
 	m_priorRecaps.clear();
 	m_priorAssistant.clear();
+}
+
+void LlmPlayer::refreshContextSize()
+{
+	// Re-read the server's n_ctx so the context badge can't go stale if you change
+	// it server-side between games. Skipped if pinned via POKERTH_LLM_CONTEXT.
+	if (m_enabled && !m_contextPinned)
+		fetchContextSize();
 }
 
 QString LlmPlayer::compactRecap(const QJsonObject &obs) const

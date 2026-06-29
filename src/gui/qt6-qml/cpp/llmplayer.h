@@ -56,6 +56,8 @@ public:
 
 	// Clear the replayed reasoning conversation (call when a new game starts).
 	void resetConversation();
+	// Re-read the server's context window (keeps the ctx badge fresh across games).
+	void refreshContextSize();
 
 signals:
 	// A legal, ready-to-apply decision. action is one of:
@@ -115,6 +117,7 @@ private:
 
 	// Context-length tracking.
 	int m_contextSize = 0;        // loaded n_ctx (tokens), 0 = unknown
+	bool m_contextPinned = false; // true if POKERTH_LLM_CONTEXT set (don't auto-refetch)
 	int m_lastPromptTokens = 0;
 	int m_peakPromptTokens = 0;
 

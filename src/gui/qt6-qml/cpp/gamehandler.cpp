@@ -1797,6 +1797,7 @@ void GameHandler::startLocalGame()
     if (!m_session) return;
     m_localGameExitRequested = false;
     resetLlmContext();
+    if (m_llm) m_llm->refreshContextSize();   // keep the ctx badge denominator fresh
 
     GameData gameData;
     if (m_config) {
