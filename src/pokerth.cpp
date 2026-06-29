@@ -346,46 +346,6 @@ int main( int argc, char **argv )
 	QApplication::setLibraryPaths(QStringList(dir.absolutePath()));
 #endif
 
-#ifndef ANDROID
-	// UI scale: if QT_SCALE_FACTOR isn't already set, let POKERTH_UI_SCALE drive it
-	// (e.g. 0.8 = 80%) so the whole UI can be shrunk/enlarged. Read from the
-	// environment, falling back to the same .env file the LLM config uses. Must be
-	// set before QApplication is constructed.
-	if (qEnvironmentVariableIsEmpty("QT_SCALE_FACTOR")) {
-		QString uiScale = QString::fromLocal8Bit(qgetenv("POKERTH_UI_SCALE")).trimmed();
-		if (uiScale.isEmpty()) {
-			QStringList envFiles;
-			const QByteArray explicitEnv = qgetenv("POKERTH_LLM_ENV");
-			if (!explicitEnv.isEmpty()) envFiles << QString::fromLocal8Bit(explicitEnv);
-			envFiles << QStringLiteral(".env")
-			         << QDir::home().filePath(QStringLiteral(".pokerth_llm.env"));
-			for (const QString &path : envFiles) {
-				QFile f(path);
-				if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
-				QTextStream in(&f);
-				while (!in.atEnd()) {
-					QString line = in.readLine().trimmed();
-					if (line.startsWith(QStringLiteral("export "))) line = line.mid(7).trimmed();
-					if (line.startsWith(QStringLiteral("POKERTH_UI_SCALE"))) {
-						const int eq = line.indexOf('=');
-						if (eq > 0) {
-							uiScale = line.mid(eq + 1).trimmed();
-							uiScale.remove('"').remove('\'');
-						}
-						break;
-					}
-				}
-				f.close();
-				if (!uiScale.isEmpty()) break;
-			}
-		}
-		bool ok = false;
-		const double s = uiScale.toDouble(&ok);
-		if (ok && s > 0.0)
-			qputenv("QT_SCALE_FACTOR", QByteArray::number(s, 'f', 4));
-	}
-#endif
-
 	/////// can be removed for non-qt-guis ////////////
 #ifdef ANDROID
 	// The 800×480 mobile layout needs ≥480 logical px on the short screen edge.

@@ -57,7 +57,6 @@ delay reductions in `qmlguiinterface.cpp`.
 | `POKERTH_LLM_HISTORY_HANDS` | `40` | How many finished hands of session memory to feed the model (each with its full betting narrative + outcome). Raise it to use more of the context window. |
 | `POKERTH_LLM_REASONING_SCOPE` | `turns` | When the replayed reasoning chain resets: `turns` (rolling window of N), `hand` (reset each hand), `game` (retain across the tournament, auto-capped at ~½ `n_ctx`). |
 | `POKERTH_LLM_REASONING_TURNS` | `0` | **Reasoning hydration**: replay prior decisions as a real conversation so the model sees its own chain-of-thought. In `turns` scope this is the window (0 = off); in `hand`/`game` scope it's an optional extra cap. Adds tokens to the prompt — with `preserve_thinking` on the server, the model reuses prior reasoning and often generates far fewer new tokens. |
-| `POKERTH_UI_SCALE` | `1.0` | Whole-UI scale (e.g. `0.8` = 80%). Applied as `QT_SCALE_FACTOR` before Qt starts (read from env or the `.env` file); a real `QT_SCALE_FACTOR` overrides it. |
 | `POKERTH_LLM_LOG` | `~/pokerth_llm_eval.jsonl` | JSONL decision log path. |
 
 Each decision's token usage (`usage.prompt_tokens/completion_tokens/total_tokens`,
