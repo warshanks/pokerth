@@ -106,6 +106,12 @@ LlmPlayer::LlmPlayer(QObject *parent)
 	if (ok && ctx > 0) { m_contextSize = ctx; m_contextPinned = true; }
 	const int rt = cfg("POKERTH_LLM_REASONING_TURNS").toInt(&ok);
 	if (ok && rt >= 0) m_reasoningTurns = rt;
+	// Scope of reasoning hydration: "turns" (rolling window of N), "hand" (reset
+	// each hand), or "game" (reset each game/tournament).
+	const QString scope = cfg("POKERTH_LLM_REASONING_SCOPE", "turns").trimmed().toLower();
+	if (scope == "hand")       m_reasoningScope = ScopeHand;
+	else if (scope == "game")  m_reasoningScope = ScopeGame;
+	else                       m_reasoningScope = ScopeTurns;
 
 	m_jsonMode = (cfg("POKERTH_LLM_JSON_MODE", "1") != "0");
 
@@ -123,7 +129,9 @@ LlmPlayer::LlmPlayer(QObject *parent)
 	if (m_enabled)
 		qInfo() << "[LLM] autopilot ENABLED endpoint=" << m_endpoint
 		        << "model=" << m_model << "log=" << m_logPath
-		        << "reasoning_hydration_turns=" << m_reasoningTurns;
+		        << "reasoning_scope=" << (m_reasoningScope == ScopeHand ? "hand"
+		                                  : m_reasoningScope == ScopeGame ? "game" : "turns")
+		        << "reasoning_turns=" << m_reasoningTurns;
 
 	// Learn the loaded context window from the server (unless set explicitly).
 	if (m_enabled && m_contextSize == 0)
@@ -219,6 +227,14 @@ void LlmPlayer::resetConversation()
 {
 	m_priorRecaps.clear();
 	m_priorAssistant.clear();
+	m_priorTokensEst.clear();
+}
+
+void LlmPlayer::onHandStart()
+{
+	// "hand" scope: the reasoning chain is retained within a hand, then cleared.
+	if (m_reasoningScope == ScopeHand)
+		resetConversation();
 }
 
 void LlmPlayer::refreshContextSize()
@@ -289,7 +305,7 @@ void LlmPlayer::onReplyFinished()
 	// Reasoning hydration: remember this turn so future requests can replay it as a
 	// conversation. The assistant message carries the chain-of-thought inline (in
 	// <think> tags) so it survives regardless of the server's history-stripping.
-	if (m_reasoningTurns > 0 && !content.trimmed().isEmpty()) {
+	if (hydrationEnabled() && !content.trimmed().isEmpty()) {
 		QString assistantMsg;
 		if (!reasoningContent.trimmed().isEmpty())
 			assistantMsg = QStringLiteral("<think>\n%1\n</think>\n\n%2").arg(reasoningContent, content);
@@ -297,9 +313,25 @@ void LlmPlayer::onReplyFinished()
 			assistantMsg = content;
 		m_priorRecaps.append(m_pendingRecap);
 		m_priorAssistant.append(assistantMsg);
-		while (m_priorRecaps.size() > m_reasoningTurns) {
+		m_priorTokensEst.append((m_pendingRecap.size() + assistantMsg.size()) / 4);
+
+		auto dropOldest = [&]() {
 			m_priorRecaps.removeFirst();
 			m_priorAssistant.removeFirst();
+			m_priorTokensEst.removeFirst();
+		};
+		// Rolling-window cap for "turns" scope.
+		if (m_reasoningScope == ScopeTurns && m_reasoningTurns > 0)
+			while (m_priorRecaps.size() > m_reasoningTurns) dropOldest();
+		// Token-budget safety (all scopes): keep the replayed history under ~half the
+		// context window so a long "game" scope can't overflow n_ctx.
+		if (m_contextSize > 0) {
+			int sum = 0;
+			for (int t : m_priorTokensEst) sum += t;
+			const int budget = m_contextSize / 2;
+			while (m_priorRecaps.size() > 1 && sum > budget) { sum -= m_priorTokensEst.first(); dropOldest(); }
+		} else {
+			while (m_priorRecaps.size() > 64) dropOldest();   // unknown ctx: hard fallback
 		}
 	}
 

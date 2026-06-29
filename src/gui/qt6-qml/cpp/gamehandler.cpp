@@ -1650,6 +1650,7 @@ void GameHandler::onLlmRecordAction(const QString &name, int action, int amount)
 void GameHandler::onLlmHandStart(int handId)
 {
     if (!m_llm || !m_llm->enabled()) return;
+    m_llm->onHandStart();   // clears the reasoning chain when scope == "hand"
 
     // Finalize the just-completed hand into the recent-hands ring buffer.
     if (m_llmCurrentHandId >= 0 && (!m_llmHandActions.isEmpty() || !m_llmHandWinners.isEmpty())) {

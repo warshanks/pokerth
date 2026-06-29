@@ -58,6 +58,8 @@ public:
 	void resetConversation();
 	// Re-read the server's context window (keeps the ctx badge fresh across games).
 	void refreshContextSize();
+	// Notify of a new hand (clears the reasoning chain when scope == "hand").
+	void onHandStart();
 
 signals:
 	// A legal, ready-to-apply decision. action is one of:
@@ -121,12 +123,16 @@ private:
 	int m_lastPromptTokens = 0;
 	int m_peakPromptTokens = 0;
 
-	// Reasoning hydration: replay the last N turns as a conversation so the model
-	// sees its own prior chain-of-thought. 0 = off (POKERTH_LLM_REASONING_TURNS).
-	int m_reasoningTurns = 0;
-	QString m_pendingRecap;       // recap of the in-flight turn (stored on reply)
-	QStringList m_priorRecaps;    // user-side recap per remembered turn
-	QStringList m_priorAssistant; // assistant reply (reasoning + answer) per turn
+	// Reasoning hydration: replay prior turns as a conversation so the model sees
+	// its own chain-of-thought. Scope decides when the chain resets.
+	enum ReasoningScope { ScopeTurns = 0, ScopeHand = 1, ScopeGame = 2 };
+	int m_reasoningTurns = 0;        // window size / safety cap (POKERTH_LLM_REASONING_TURNS)
+	int m_reasoningScope = ScopeTurns;
+	bool hydrationEnabled() const { return m_reasoningScope != ScopeTurns || m_reasoningTurns > 0; }
+	QString m_pendingRecap;          // recap of the in-flight turn (stored on reply)
+	QStringList m_priorRecaps;       // user-side recap per remembered turn
+	QStringList m_priorAssistant;    // assistant reply (reasoning + answer) per turn
+	QList<int>  m_priorTokensEst;    // rough token estimate per remembered turn
 };
 
 #endif // LLMPLAYER_H
