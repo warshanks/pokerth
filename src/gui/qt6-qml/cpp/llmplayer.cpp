@@ -102,6 +102,8 @@ LlmPlayer::LlmPlayer(QObject *parent)
 	if (ok && tmo > 0) m_timeoutMs = tmo;
 	const int mt = cfg("POKERTH_LLM_MAX_TOKENS").toInt(&ok);
 	if (ok && mt > 0) m_maxTokens = mt;
+	const int ctx = cfg("POKERTH_LLM_CONTEXT").toInt(&ok);
+	if (ok && ctx > 0) m_contextSize = ctx;
 
 	m_jsonMode = (cfg("POKERTH_LLM_JSON_MODE", "1") != "0");
 
@@ -119,9 +121,57 @@ LlmPlayer::LlmPlayer(QObject *parent)
 	if (m_enabled)
 		qInfo() << "[LLM] autopilot ENABLED endpoint=" << m_endpoint
 		        << "model=" << m_model << "log=" << m_logPath;
+
+	// Learn the loaded context window from the server (unless set explicitly).
+	if (m_enabled && m_contextSize == 0)
+		fetchContextSize();
 }
 
 LlmPlayer::~LlmPlayer() = default;
+
+void LlmPlayer::fetchContextSize()
+{
+	// llama.cpp serves GET /props with default_generation_settings.n_ctx. Derive
+	// the URL from the chat endpoint (replace the /v1/... path, else use host root).
+	QString propsUrl = m_endpoint;
+	const int idx = propsUrl.indexOf(QStringLiteral("/v1/"));
+	if (idx >= 0) {
+		propsUrl = propsUrl.left(idx) + QStringLiteral("/props");
+	} else {
+		const QUrl u(m_endpoint);
+		propsUrl = u.scheme() + QStringLiteral("://") + u.host()
+		           + (u.port() > 0 ? QStringLiteral(":%1").arg(u.port()) : QString())
+		           + QStringLiteral("/props");
+	}
+
+	QNetworkRequest req{QUrl(propsUrl)};
+	if (!m_apiKey.isEmpty())
+		req.setRawHeader("Authorization", QByteArray("Bearer ") + m_apiKey.toUtf8());
+	req.setTransferTimeout(m_timeoutMs);
+	QNetworkReply *reply = m_nam->get(req);
+	connect(reply, &QNetworkReply::finished, this, &LlmPlayer::onPropsFinished);
+}
+
+void LlmPlayer::onPropsFinished()
+{
+	QNetworkReply *reply = qobject_cast<QNetworkReply *>(sender());
+	if (!reply) return;
+	reply->deleteLater();
+	if (reply->error() != QNetworkReply::NoError) {
+		qInfo() << "[LLM] /props fetch failed:" << reply->errorString()
+		        << "(context-length % will be unavailable; set POKERTH_LLM_CONTEXT to override)";
+		return;
+	}
+	QJsonParseError pe;
+	const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll(), &pe);
+	if (pe.error != QJsonParseError::NoError || !doc.isObject()) return;
+	const int n = doc.object().value("default_generation_settings").toObject()
+	              .value("n_ctx").toInt();
+	if (n > 0) {
+		m_contextSize = n;
+		qInfo() << "[LLM] context window n_ctx=" << m_contextSize;
+	}
+}
 
 void LlmPlayer::requestDecision(const QJsonObject &observation)
 {
@@ -166,6 +216,7 @@ void LlmPlayer::onReplyFinished()
 	QString status;
 	QString content;
 	QString reasoning;
+	QJsonObject usage;
 
 	if (reply->error() != QNetworkReply::NoError) {
 		status = QStringLiteral("http_error: ") + reply->errorString();
@@ -178,6 +229,7 @@ void LlmPlayer::onReplyFinished()
 			status = QStringLiteral("bad_response_json");
 			fallback(m_pendingObs, action, amount);
 		} else {
+			usage = doc.object().value("usage").toObject();
 			content = doc.object()
 			          .value("choices").toArray().at(0).toObject()
 			          .value("message").toObject()
@@ -191,11 +243,21 @@ void LlmPlayer::onReplyFinished()
 		}
 	}
 
-	logDecision(m_pendingObs, content, action, amount, reasoning, status, latency, httpStatus);
+	const int promptTokens     = usage.value("prompt_tokens").toInt();
+	const int completionTokens = usage.value("completion_tokens").toInt();
+	const int totalTokens      = usage.value("total_tokens").toInt();
+	if (promptTokens > 0) {
+		m_lastPromptTokens = promptTokens;
+		if (promptTokens > m_peakPromptTokens) m_peakPromptTokens = promptTokens;
+	}
+
+	logDecision(m_pendingObs, content, action, amount, reasoning, status, latency, httpStatus, usage);
 	qInfo() << "[LLM] decision=" << action << "amount=" << amount
 	        << "status=" << status << "latency_ms=" << latency
-	        << "reasoning=" << reasoning;
+	        << "prompt_tokens=" << promptTokens << "/" << m_contextSize
+	        << "peak=" << m_peakPromptTokens;
 	emit decisionReady(action, amount, reasoning);
+	emit contextUsage(promptTokens, completionTokens, totalTokens, m_contextSize);
 }
 
 void LlmPlayer::decideFromText(const QJsonObject &obs, const QString &content,
@@ -457,7 +519,8 @@ QString LlmPlayer::buildUserPrompt(const QJsonObject &obs) const
 
 void LlmPlayer::logDecision(const QJsonObject &obs, const QString &rawContent,
                             const QString &action, int amount, const QString &reasoning,
-                            const QString &status, qint64 latencyMs, int httpStatus) const
+                            const QString &status, qint64 latencyMs, int httpStatus,
+                            const QJsonObject &usage) const
 {
 	if (m_logPath.isEmpty()) return;
 
@@ -472,6 +535,9 @@ void LlmPlayer::logDecision(const QJsonObject &obs, const QString &rawContent,
 	rec["status"]      = status;
 	rec["latency_ms"]  = static_cast<double>(latencyMs);
 	rec["http_status"] = httpStatus;
+	// Token usage for context-length tracking (llama.cpp returns this).
+	if (!usage.isEmpty()) rec["usage"] = usage;
+	rec["context_size"] = m_contextSize;
 
 	QFile f(m_logPath);
 	if (f.open(QIODevice::Append | QIODevice::Text)) {

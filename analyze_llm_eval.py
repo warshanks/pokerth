@@ -84,6 +84,25 @@ def main():
               f"mean {statistics.mean(latencies):.0f}  max {max(latencies):.0f}")
         print()
 
+    # Context-length / token usage.
+    prompt_toks = [(r.get("usage") or {}).get("prompt_tokens") for r in rows]
+    prompt_toks = [t for t in prompt_toks if isinstance(t, (int, float))]
+    ctx_sizes = [r.get("context_size") for r in rows if isinstance(r.get("context_size"), (int, float)) and r.get("context_size")]
+    if prompt_toks:
+        ctx = max(ctx_sizes) if ctx_sizes else 0
+        peak = max(prompt_toks)
+        print("context length (prompt tokens):")
+        line = (f"  min {min(prompt_toks):.0f}  median {statistics.median(prompt_toks):.0f}  "
+                f"mean {statistics.mean(prompt_toks):.0f}  peak {peak:.0f}")
+        if ctx:
+            line += f"   window {ctx}  peak {100.0 * peak / ctx:.1f}% of window"
+        print(line)
+        cached = [(r.get("usage") or {}).get("prompt_tokens_details", {}).get("cached_tokens") for r in rows]
+        cached = [c for c in cached if isinstance(c, (int, float))]
+        if cached and sum(cached):
+            print(f"  cached prompt tokens: mean {statistics.mean(cached):.0f} (prompt-cache reuse)")
+        print()
+
     # Hero chip-stack trajectory (captured in every observation).
     stacks = []
     for r in rows:

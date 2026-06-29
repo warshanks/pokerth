@@ -1605,6 +1605,23 @@ Rectangle {
                             }
                         }
                     }
+
+                    // LLM context-length readout (prompt tokens / context window).
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 1
+                        visible: ctxUsageText.visible
+                        color: Config.Theme.withAlpha(Config.StaticData.palette.secondary.col500, 0.5)
+                    }
+                    Text {
+                        id: ctxUsageText
+                        Layout.fillWidth: true
+                        visible: text.length > 0
+                        text: (typeof GameTable !== "undefined" && GameTable) ? GameTable.contextUsageText : ""
+                        color: Config.Theme.withAlpha(Config.StaticData.palette.secondary.col200, 0.85)
+                        font.family: Config.StaticData.loadedFont.font.family
+                        font.pixelSize: 10
+                    }
                 }
             }
 

@@ -52,7 +52,15 @@ delay reductions in `qmlguiinterface.cpp`.
 | `POKERTH_LLM_TEMPERATURE` | `0.7` | Sampling temperature. |
 | `POKERTH_LLM_TIMEOUT_MS` | `30000` | Per‑request transfer timeout. |
 | `POKERTH_LLM_JSON_MODE` | `1` | Send `response_format: json_object`. Set `0` if your server rejects it. |
+| `POKERTH_LLM_MAX_TOKENS` | `1024` | Max output tokens per decision. |
+| `POKERTH_LLM_CONTEXT` | auto | Context window in tokens for the on-screen `%`. Auto-detected from llama.cpp `/props` (`n_ctx`); set to override or for non-llama servers. |
 | `POKERTH_LLM_LOG` | `~/pokerth_llm_eval.jsonl` | JSONL decision log path. |
+
+Each decision's token usage (`usage.prompt_tokens/completion_tokens/total_tokens`,
+plus `context_size`) is recorded in the JSONL and shown live in the chance panel
+(`ctx 1,234 / 131,072 (1%)`). `analyze_llm_eval.py` summarises prompt-token
+min/median/mean/peak and the peak as a % of the window — useful for watching the
+session history (`recent_hands`, etc.) grow against the context limit.
 
 Autopilot only engages when `POKERTH_LLM_ENABLE=1` **and** an endpoint is set.
 With it off, the client behaves exactly as before.

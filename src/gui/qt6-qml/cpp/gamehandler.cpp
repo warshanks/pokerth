@@ -29,6 +29,7 @@
 #include <QEvent>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QLocale>
 #include <algorithm>
 #include <list>
 
@@ -208,6 +209,7 @@ GameHandler::GameHandler(QObject *parent)
     // a no-op unless POKERTH_LLM_ENABLE=1 and an endpoint are set).
     m_llm = new LlmPlayer(this);
     connect(m_llm, &LlmPlayer::decisionReady, this, &GameHandler::onLlmDecision);
+    connect(m_llm, &LlmPlayer::contextUsage, this, &GameHandler::onContextUsage);
 }
 
 bool GameHandler::eventFilter(QObject *watched, QEvent *event)
@@ -1724,6 +1726,27 @@ void GameHandler::onLlmDecision(const QString &action, int amount, const QString
     appendGameLog(thought, LogSitOut);
 
     applyLlmAction(action, amount);
+}
+
+void GameHandler::onContextUsage(int promptTokens, int completionTokens, int totalTokens, int contextSize)
+{
+    Q_UNUSED(completionTokens)
+    Q_UNUSED(totalTokens)
+    if (promptTokens <= 0) return;
+
+    const QLocale loc = QLocale::system();
+    QString txt;
+    if (contextSize > 0) {
+        const int pct = qMin(100, (promptTokens * 100) / contextSize);
+        txt = QStringLiteral("ctx %1 / %2 (%3%)")
+              .arg(loc.toString(promptTokens), loc.toString(contextSize)).arg(pct);
+    } else {
+        txt = QStringLiteral("ctx %1 tok").arg(loc.toString(promptTokens));
+    }
+    if (txt != m_contextUsageText) {
+        m_contextUsageText = txt;
+        emit contextUsageChanged();
+    }
 }
 
 void GameHandler::applyLlmAction(const QString &action, int amount)

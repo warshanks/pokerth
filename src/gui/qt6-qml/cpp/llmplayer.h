@@ -44,6 +44,9 @@ public:
 	// True when the autopilot is configured (enable flag set AND an endpoint given).
 	bool enabled() const { return m_enabled; }
 	QString model() const { return m_model; }
+	// Loaded context window in tokens (from llama.cpp /props or POKERTH_LLM_CONTEXT);
+	// 0 if unknown.
+	int contextSize() const { return m_contextSize; }
 
 	// Kick off ONE asynchronous decision for the given observation. Exactly one
 	// decisionReady() follows (possibly a fallback move) per call. The caller is
@@ -58,10 +61,17 @@ signals:
 	// short self-explanation (may be empty), for display/logging only.
 	void decisionReady(const QString &action, int amount, const QString &reasoning);
 
+	// Token usage of the latest decision request, for context-length tracking.
+	// contextSize is the loaded window (0 if unknown).
+	void contextUsage(int promptTokens, int completionTokens, int totalTokens, int contextSize);
+
 private slots:
 	void onReplyFinished();
+	void onPropsFinished();
 
 private:
+	// Best-effort GET of llama.cpp /props to learn the context window (n_ctx).
+	void fetchContextSize();
 	QString buildSystemPrompt() const;
 	QString buildUserPrompt(const QJsonObject &obs) const;
 	// Parse the model's reply text and map+clamp it against the legal options in
@@ -74,7 +84,8 @@ private:
 	void fallback(const QJsonObject &obs, QString &outAction, int &outAmount) const;
 	void logDecision(const QJsonObject &obs, const QString &rawContent,
 	                 const QString &action, int amount, const QString &reasoning,
-	                 const QString &status, qint64 latencyMs, int httpStatus) const;
+	                 const QString &status, qint64 latencyMs, int httpStatus,
+	                 const QJsonObject &usage) const;
 
 	bool m_enabled = false;
 	QString m_endpoint;
@@ -95,6 +106,11 @@ private:
 	// the reply arrives. Safe because callers keep one request in flight.
 	QJsonObject m_pendingObs;
 	qint64 m_requestStartMs = 0;
+
+	// Context-length tracking.
+	int m_contextSize = 0;        // loaded n_ctx (tokens), 0 = unknown
+	int m_lastPromptTokens = 0;
+	int m_peakPromptTokens = 0;
 };
 
 #endif // LLMPLAYER_H
